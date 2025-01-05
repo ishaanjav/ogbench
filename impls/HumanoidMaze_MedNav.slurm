@@ -32,7 +32,7 @@ AGENT_ALPHA=0.1
 AGENT_DISCOUNT=0.995
 
 SEED=-1
-NUM_SEEDS=2
+NUM_SEEDS=3
 
 # Print experiment details
 echo "Environment: ${ENV_NAME}"
