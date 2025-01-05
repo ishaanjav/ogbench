@@ -44,7 +44,7 @@ echo "Number of seeds: ${NUM_SEEDS}"
 
 
 # Run first experiment with variables
-for SEED in $(seq 1 ${NUM_SEEDS}); do
+for NUM in $(seq 1 ${NUM_SEEDS}); do
     echo "Running seed ${SEED}"
     python main.py \
         --env_name=${ENV_NAME} \
