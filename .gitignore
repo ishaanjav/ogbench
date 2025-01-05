@@ -13,3 +13,5 @@ slurm_logs/
 slurm_logs/*
 wandb/
 wandb/*
+
+exp
