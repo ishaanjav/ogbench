@@ -47,6 +47,8 @@ flags.DEFINE_integer('eval_on_cpu', 1, 'Whether to evaluate on CPU.')
 config_flags.DEFINE_config_file('agent', 'agents/gciql.py', lock_config=False)
 
 
+jax.config.update('jax_default_matmul_precision', 'highest')
+
 def main(_):
     # random seed if -1
     if FLAGS.seed == -1:

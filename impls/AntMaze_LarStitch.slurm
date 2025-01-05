@@ -6,7 +6,7 @@
 #SBATCH --constraint=a100
 #SBATCH --mem-per-cpu=8G   # memory per cpu-core
 #SBATCH --cpus-per-task=4        # cpu-cores per task (>1 if multi-threaded tasks)
-#SBATCH --time=36:00:00
+#SBATCH --time=15:00:00
 #SBATCH --mail-type=begin        # send email when job begins
 #SBATCH --mail-type=end          # send email when job ends
 #SBATCH --mail-user=ij9461@princeton.edu
@@ -56,5 +56,5 @@ for NUM in $(seq 1 ${NUM_SEEDS}); do
         --run_group=${RUN_GROUP} \
         --wandb_mode=${WANDB_MODE} \
         --seed=${SEED} \
-        --agent.actor_p_randomgoal=0.5 --agent.actor_p_trajgoal=0.5 \
+        --agent.actor_p_randomgoal=0.5 --agent.actor_p_trajgoal=0.5
 done
