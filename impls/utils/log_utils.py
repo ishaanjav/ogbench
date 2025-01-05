@@ -65,7 +65,7 @@ def setup_wandb(
     group=None,
     name=None,
     mode='online',
-    wandb_output_dir='../',
+    wandb_output_dir='/home/ij9461/Documents/ogbench/',
 ):
     """Set up Weights & Biases for logging."""
     # wandb_output_dir = tempfile.mkdtemp()

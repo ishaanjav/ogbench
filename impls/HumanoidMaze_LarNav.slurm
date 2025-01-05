@@ -22,8 +22,8 @@ wandb online
 
 # Define variables for the experiment
 ENV_NAME="humanoidmaze-large-navigate-v0"
-WANDB_PROJECT_NAME="Humanoid Maze Large Navigate"
-RUN_GROUP="CRL Basic Test"
+WANDB_PROJECT_NAME="Humanoid-Maze-Large-Navigate"
+RUN_GROUP="CRL"
 WANDB_MODE="offline"
 EVAL_EPISODES=50
 AGENT_PATH="agents/crl.py"
@@ -32,7 +32,7 @@ AGENT_ALPHA=0.1
 AGENT_DISCOUNT=0.995
 
 SEED=-1
-NUM_SEEDS=1
+NUM_SEEDS=2
 
 # Print experiment details
 echo "Environment: ${ENV_NAME}"

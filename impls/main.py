@@ -23,7 +23,7 @@ flags.DEFINE_string('run_group', 'Debug', 'Run group.')
 flags.DEFINE_string('wandb_project_name', 'OGBench', 'Wandb project name.')
 flags.DEFINE_string('wandb_entity', 'ij9461-princeton-university', 'Wandb entity.')
 flags.DEFINE_string('wandb_mode', 'offline', 'Wandb mode.')
-flags.DEFINE_string('wandb_output_dir', '../', 'Wandb directory.')
+flags.DEFINE_string('wandb_output_dir', '/home/ij9461/Documents/ogbench/', 'Wandb directory.')
 
 flags.DEFINE_integer('seed', -1, 'Random seed.')
 flags.DEFINE_string('env_name', 'antmaze-large-navigate-v0', 'Environment (dataset) name.')
