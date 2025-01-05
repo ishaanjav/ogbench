@@ -20,7 +20,12 @@ from utils.log_utils import CsvLogger, get_exp_name, get_flag_dict, get_wandb_vi
 FLAGS = flags.FLAGS
 
 flags.DEFINE_string('run_group', 'Debug', 'Run group.')
-flags.DEFINE_integer('seed', 0, 'Random seed.')
+flags.DEFINE_string('wandb_project_name', 'OGBench', 'Wandb project name.')
+flags.DEFINE_string('wandb_entity', 'ij9461-princeton-university', 'Wandb entity.')
+flags.DEFINE_string('wandb_mode', 'offline', 'Wandb mode.')
+flags.DEFINE_string('wandb_output_dir', '../', 'Wandb directory.')
+
+flags.DEFINE_integer('seed', -1, 'Random seed.')
 flags.DEFINE_string('env_name', 'antmaze-large-navigate-v0', 'Environment (dataset) name.')
 flags.DEFINE_string('save_dir', 'exp/', 'Save directory.')
 flags.DEFINE_string('restore_path', None, 'Restore path.')
@@ -43,9 +48,20 @@ config_flags.DEFINE_config_file('agent', 'agents/gciql.py', lock_config=False)
 
 
 def main(_):
+    # random seed if -1
+    if FLAGS.seed == -1:
+        FLAGS.seed = random.randint(0, 2**32 - 1)
+
+    # Print all FLAGS
+    print("\n=== Configuration ===")
+    for flag in FLAGS:
+        print(f"{flag}: {FLAGS[flag].value}")
+    print("===================\n")
+
     # Set up logger.
     exp_name = get_exp_name(FLAGS.seed)
-    setup_wandb(project='OGBench', group=FLAGS.run_group, name=exp_name)
+    setup_wandb(project=FLAGS.wandb_project_name, group=FLAGS.run_group, name=exp_name, 
+        entity=FLAGS.wandb_entity, mode=FLAGS.wandb_mode)
 
     FLAGS.save_dir = os.path.join(FLAGS.save_dir, wandb.run.project, FLAGS.run_group, exp_name)
     os.makedirs(FLAGS.save_dir, exist_ok=True)

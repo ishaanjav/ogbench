@@ -65,10 +65,23 @@ def setup_wandb(
     group=None,
     name=None,
     mode='online',
+    wandb_output_dir='../',
 ):
     """Set up Weights & Biases for logging."""
-    wandb_output_dir = tempfile.mkdtemp()
+    # wandb_output_dir = tempfile.mkdtemp()
     tags = [group] if group is not None else None
+
+    # wandb.init(
+    #         project=args.wandb_project_name,
+    #         entity=args.wandb_entity,
+    #         mode=args.wandb_mode,
+    #         group=args.wandb_group,
+    #         dir=args.wandb_dir,
+    #         config=vars(args),
+    #         name=run_name,
+    #         monitor_gym=True,
+    #         save_code=True,
+    #     )
 
     init_kwargs = dict(
         config=get_flag_dict(),
@@ -86,7 +99,10 @@ def setup_wandb(
         save_code=True,
     )
 
+    # print("**gere", init_kwargs, flush=True)
     run = wandb.init(**init_kwargs)
+
+    print("**DONE")
 
     return run
 

@@ -6,3 +6,10 @@ dist/
 .DS_Store
 .idea/
 .ruff_cache/
+
+# Ignore all .log files anywhere in the repository
+**/*.log
+slurm_logs/
+slurm_logs/*
+wandb/
+wandb/*
