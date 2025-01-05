@@ -55,5 +55,6 @@ for NUM in $(seq 1 ${NUM_SEEDS}); do
         --wandb_project_name=${WANDB_PROJECT_NAME} \
         --run_group=${RUN_GROUP} \
         --wandb_mode=${WANDB_MODE} \
-        --seed=${SEED}
+        --seed=${SEED} \
+        --agent.actor_p_randomgoal=0.5 --agent.actor_p_trajgoal=0.5 \
 done
