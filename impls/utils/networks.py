@@ -223,7 +223,6 @@ class Actor(nn.Module):
     log_std_max: float = 2
     state_dependent_std: bool = False
     const_std: bool = True
-    gc_encoder: nn.Module = None
 
     def setup(self):
         self.lecun_uniform = variance_scaling(1/3, "fan_in", "uniform")
@@ -489,6 +488,65 @@ class GCDiscreteCritic(GCValue):
         return super().__call__(observations, goals, actions)
 
 
+class JaxGCRLValue(nn.Module):
+    """Goal-conditioned bilinear value/critic function.
+
+    This module computes the value function as V(s, g) = phi(s)^T psi(g) / sqrt(d) or the critic function as
+    Q(s, a, g) = phi(s, a)^T psi(g) / sqrt(d), where phi and psi output d-dimensional vectors.
+
+    Attributes:
+        hidden_dims: Hidden layer dimensions.
+        latent_dim: Latent dimension.
+        layer_norm: Whether to apply layer normalization.
+        ensemble: Whether to ensemble the value function.
+        value_exp: Whether to exponentiate the value. Useful for contrastive learning.
+        state_encoder: Optional state encoder.
+        goal_encoder: Optional goal encoder.
+    """
+
+    hidden_dims: Sequence[int]
+    latent_dim: int
+    layer_norm: bool = True
+    ensemble: bool = True
+    value_exp: bool = False
+    state_encoder: nn.Module = None
+    goal_encoder: nn.Module = None
+
+    def setup(self) -> None:
+        mlp_module = MLP
+        if self.ensemble:
+            mlp_module = ensemblize(mlp_module, 2)
+
+        self.phi = mlp_module((*self.hidden_dims, self.latent_dim), activate_final=False, layer_norm=self.layer_norm)
+        self.psi = mlp_module((*self.hidden_dims, self.latent_dim), activate_final=False, layer_norm=self.layer_norm)
+
+    def __call__(self, observations, goals, actions=None, info=False):
+        """Return the value/critic function.
+
+        Args:
+            observations: Observations.
+            goals: Goals.
+            actions: Actions (optional).
+            info: Whether to additionally return the representations phi and psi.
+        """
+        if actions is None:
+            phi_inputs = observations
+        else:
+            phi_inputs = jnp.concatenate([observations, actions], axis=-1)
+
+        phi = self.phi(phi_inputs)
+        psi = self.psi(goals)
+
+        v = (phi * psi / jnp.sqrt(self.latent_dim)).sum(axis=-1)
+
+        if self.value_exp:
+            v = jnp.exp(v)
+
+        if info:
+            return v, phi, psi
+        else:
+            return v
+
 class GCBilinearValue(nn.Module):
     """Goal-conditioned bilinear value/critic function.
 
@@ -530,19 +588,23 @@ class GCBilinearValue(nn.Module):
             actions: Actions (optional).
             info: Whether to additionally return the representations phi and psi.
         """
+        # 1. Optional encoding of visual inputs
         if self.state_encoder is not None:
             observations = self.state_encoder(observations)
         if self.goal_encoder is not None:
             goals = self.goal_encoder(goals)
 
+        # 2. Combine state and action if action is provided
         if actions is None:
             phi_inputs = observations
         else:
             phi_inputs = jnp.concatenate([observations, actions], axis=-1)
 
+        # 3. Process through the state-action and goal encoding networks
         phi = self.phi(phi_inputs)
         psi = self.psi(goals)
 
+        # 4. Compute the value function
         v = (phi * psi / jnp.sqrt(self.latent_dim)).sum(axis=-1)
 
         if self.value_exp:

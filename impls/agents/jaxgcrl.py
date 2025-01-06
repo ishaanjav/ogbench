@@ -7,10 +7,10 @@ import ml_collections
 import optax
 from utils.encoders import GCEncoder, encoder_modules
 from utils.flax_utils import ModuleDict, TrainState, nonpytree_field
-from utils.networks import GCActor, GCBilinearValue, GCDiscreteActor, GCDiscreteBilinearCritic
+from utils.networks import GCActor, GCBilinearValue, GCDiscreteActor, GCDiscreteBilinearCritic, JaxGCRLValue
 
 
-class CRLAgent(flax.struct.PyTreeNode):
+class JAXGCRLAgent(flax.struct.PyTreeNode):
     """Contrastive RL (CRL) agent.
 
     This implementation supports both AWR (actor_loss='awr') and DDPG+BC (actor_loss='ddpgbc') for the actor loss.
@@ -246,7 +246,7 @@ class CRLAgent(flax.struct.PyTreeNode):
                 action_dim=action_dim,
             )
         else:
-            critic_def = GCBilinearValue(
+            critic_def = JaxGCRLValue(
                 hidden_dims=config['value_hidden_dims'],
                 latent_dim=config['latent_dim'],
                 layer_norm=config['layer_norm'],
@@ -258,7 +258,7 @@ class CRLAgent(flax.struct.PyTreeNode):
 
         if config['actor_loss'] == 'awr':
             # AWR requires a separate V network to compute advantages (Q - V).
-            value_def = GCBilinearValue(
+            value_def = JaxGCRLValue(
                 hidden_dims=config['value_hidden_dims'],
                 latent_dim=config['latent_dim'],
                 layer_norm=config['layer_norm'],
@@ -277,12 +277,12 @@ class CRLAgent(flax.struct.PyTreeNode):
         else:
             actor_def = Actor(
                 action_dim=action_dim,
-                network_width=512,  # Using standard size from hidden_dims
-                network_depth=4,    # Derived from standard hidden_dims length
-                skip_connections=4,
-                resnet_type=config.get('resnet_type', 'resnet'),
+                network_width=config['network_width'],
+                network_depth=config['network_depth'],
+                skip_connections=config['skip_connections'],
+                use_relu=config['use_relu'],
+                resnet_type=config.get('resnet_type'),
                 const_std=config['const_std'],
-                gc_encoder=encoders.get('actor'),
             )
 
         network_info = dict(
@@ -328,6 +328,10 @@ def get_config():
             state_dependent_std=False, # Whether to use state-dependent standard deviation for the actor.
             const_std=True,  # Whether to use constant standard deviation for the actor.
             resnet_type="resnet",  # Type of residual connections
+            network_width=512,  # Using standard size from hidden_dims
+            network_depth=4,    # Derived from standard hidden_dims length
+            skip_connections=4,
+            use_relu=False,
 
             # Dataset hyperparameters.
             dataset_class='GCDataset',  # Dataset class name.
