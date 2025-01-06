@@ -7,345 +7,283 @@ import ml_collections
 import optax
 from utils.encoders import GCEncoder, encoder_modules
 from utils.flax_utils import ModuleDict, TrainState, nonpytree_field
-from utils.networks import GCActor, GCBilinearValue, GCDiscreteActor, GCDiscreteBilinearCritic, JaxGCRLValue
+from utils.networks import Actor, GCBilinearValue, GCDiscreteActor, GCDiscreteBilinearCritic, JaxGCRLValue
+from flax.linen.initializers import variance_scaling
 
+# Import the encoder architectures from train_crl_jax_brax_testing.py
+class SA_encoder(nn.Module):
+    norm_type = "layer_norm"
+    network_width: int = 1024
+    network_depth: int = 4
+    skip_connections: int = 4
+    use_relu: int = 0
+    resnet_type: str = "resnet"
+
+    def setup(self):
+        self.lecun_uniform = variance_scaling(1/3, "fan_in", "uniform")
+        self.bias_init = nn.initializers.zeros
+        self.normalize = nn.LayerNorm() if self.norm_type == "layer_norm" else lambda x: x
+        self.activation = nn.relu if self.use_relu else nn.swish
+
+        if self.resnet_type == "noresnet":
+            self.residual_block = standard_block
+        elif self.resnet_type == "resnet":
+            self.residual_block = resnet_block
+        elif self.resnet_type == "resnetOrig":
+            self.residual_block = resnet_orig_block
+        elif self.resnet_type == "identityMapping":
+            self.residual_block = identity_mapping_block
+        else:
+            raise ValueError(f"Invalid resnet type: {self.resnet_type}")
+
+    @nn.compact
+    def __call__(self, s: jnp.ndarray, a: jnp.ndarray):
+        x = jnp.concatenate([s, a], axis=-1)
+        
+        x = nn.Dense(self.network_width, kernel_init=self.lecun_uniform, bias_init=self.bias_init)(x)
+        x = self.normalize(x)
+        x = self.activation(x)
+
+        num_blocks = self.network_depth // self.skip_connections
+        remainder = self.network_depth % self.skip_connections
+        
+        for _ in range(num_blocks):
+            x = self.residual_block(
+                x, 
+                self.network_width, 
+                self.skip_connections, 
+                self.normalize, 
+                self.activation, 
+                self.lecun_uniform, 
+                self.bias_init
+            )
+        for i in range(remainder):
+            x = nn.Dense(self.network_width, kernel_init=self.lecun_uniform, bias_init=self.bias_init)(x)
+            x = self.normalize(x)
+            x = self.activation(x)
+        x = nn.Dense(64, kernel_init=self.lecun_uniform, bias_init=self.bias_init)(x)
+        return x
+
+class G_encoder(nn.Module):
+    norm_type: str = "layer_norm"
+    network_width: int = 1024
+    network_depth: int = 4
+    skip_connections: int = 4
+    use_relu: int = 0
+    resnet_type: str = "resnet"
+
+    def setup(self):
+        self.lecun_uniform = variance_scaling(1/3, "fan_in", "uniform")
+        self.bias_init = nn.initializers.zeros
+        self.normalize = nn.LayerNorm() if self.norm_type == "layer_norm" else lambda x: x
+        self.activation = nn.relu if self.use_relu else nn.swish
+
+        if self.resnet_type == "noresnet":
+            self.residual_block = standard_block
+        elif self.resnet_type == "resnet":
+            self.residual_block = resnet_block
+        elif self.resnet_type == "resnetOrig":
+            self.residual_block = resnet_orig_block
+        elif self.resnet_type == "identityMapping":
+            self.residual_block = identity_mapping_block
+        else:
+            raise ValueError(f"Invalid resnet type: {self.resnet_type}")
+
+    @nn.compact
+    def __call__(self, g: jnp.ndarray):
+        x = g
+        
+        x = nn.Dense(self.network_width, kernel_init=self.lecun_uniform, bias_init=self.bias_init)(x)
+        x = self.normalize(x)
+        x = self.activation(x)
+
+        num_blocks = self.network_depth // self.skip_connections
+        remainder = self.network_depth % self.skip_connections
+        
+        for _ in range(num_blocks):
+            x = self.residual_block(
+                x, 
+                self.network_width, 
+                self.skip_connections, 
+                self.normalize, 
+                self.activation, 
+                self.lecun_uniform, 
+                self.bias_init
+            )
+        for i in range(remainder):
+            x = nn.Dense(self.network_width, kernel_init=self.lecun_uniform, bias_init=self.bias_init)(x)
+            x = self.normalize(x)
+            x = self.activation(x)
+        x = nn.Dense(64, kernel_init=self.lecun_uniform, bias_init=self.bias_init)(x)
+        return x
 
 class JAXGCRLAgent(flax.struct.PyTreeNode):
-    """Contrastive RL (CRL) agent.
-
-    This implementation supports both AWR (actor_loss='awr') and DDPG+BC (actor_loss='ddpgbc') for the actor loss.
-    CRL with DDPG+BC only fits a Q function, while CRL with AWR fits both Q and V functions to compute advantages.
-    """
+    """Contrastive RL (CRL) agent using the JaxGCRL architecture."""
 
     rng: Any
     network: Any
     config: Any = nonpytree_field()
 
     def contrastive_loss(self, batch, grad_params, module_name='critic'):
-        """Compute the contrastive value loss for the Q or V function."""
+        """Compute the contrastive loss using JaxGCRL's approach."""
         batch_size = batch['observations'].shape[0]
-
+        
+        # Split observations into state and goal components
+        state = batch['observations'][:, :self.config['obs_dim']]
+        goal = batch['value_goals'][:, self.config['goal_start_idx']:self.config['goal_end_idx']]
+        
         if module_name == 'critic':
             actions = batch['actions']
+            sa_encoder_params = grad_params["sa_encoder"]
+            g_encoder_params = grad_params["g_encoder"]
+            
+            sa_repr = self.network.select('sa_encoder')(state, actions, params=sa_encoder_params)
+            g_repr = self.network.select('g_encoder')(goal, params=g_encoder_params)
+            
+            # Compute InfoNCE loss
+            logits = -jnp.sqrt(jnp.sum((sa_repr[:, None, :] - g_repr[None, :, :]) ** 2, axis=-1))
+            I = jnp.eye(batch_size)
+            critic_loss = -jnp.mean(jnp.diag(logits) - jax.nn.logsumexp(logits, axis=1))
+            
+            # Compute additional metrics
+            correct = jnp.argmax(logits, axis=1) == jnp.argmax(I, axis=1)
+            logits_pos = jnp.sum(logits * I) / jnp.sum(I)
+            logits_neg = jnp.sum(logits * (1 - I)) / jnp.sum(1 - I)
+            
+            return critic_loss, {
+                'contrastive_loss': critic_loss,
+                'categorical_accuracy': jnp.mean(correct),
+                'logits_pos': logits_pos,
+                'logits_neg': logits_neg,
+                'logits': logits.mean(),
+            }
         else:
-            actions = None
-        v, phi, psi = self.network.select(module_name)(
-            batch['observations'],
-            batch['value_goals'],
-            actions=actions,
-            info=True,
-            params=grad_params,
-        )
-        if len(phi.shape) == 2:  # Non-ensemble.
-            phi = phi[None, ...]
-            psi = psi[None, ...]
-        logits = jnp.einsum('eik,ejk->ije', phi, psi) / jnp.sqrt(phi.shape[-1])
-        # logits.shape is (B, B, e) with one term for positive pair and (B - 1) terms for negative pairs in each row.
-        I = jnp.eye(batch_size)
-        contrastive_loss = jax.vmap(
-            lambda _logits: optax.sigmoid_binary_cross_entropy(logits=_logits, labels=I),
-            in_axes=-1,
-            out_axes=-1,
-        )(logits)
-        contrastive_loss = jnp.mean(contrastive_loss)
-
-        # Compute additional statistics.
-        logits = jnp.mean(logits, axis=-1)
-        correct = jnp.argmax(logits, axis=1) == jnp.argmax(I, axis=1)
-        logits_pos = jnp.sum(logits * I) / jnp.sum(I)
-        logits_neg = jnp.sum(logits * (1 - I)) / jnp.sum(1 - I)
-
-        return contrastive_loss, {
-            'contrastive_loss': contrastive_loss,
-            'v_mean': v.mean(),
-            'v_max': v.max(),
-            'v_min': v.min(),
-            'binary_accuracy': jnp.mean((logits > 0) == I),
-            'categorical_accuracy': jnp.mean(correct),
-            'logits_pos': logits_pos,
-            'logits_neg': logits_neg,
-            'logits': logits.mean(),
-        }
+            return 0.0, {}
 
     def actor_loss(self, batch, grad_params, rng=None):
-        """Compute the actor loss (AWR or DDPG+BC)."""
-        # Maximize log Q if actor_log_q is True (which is default).
-        if self.config['actor_log_q']:
-
-            def value_transform(x):
-                return jnp.log(jnp.maximum(x, 1e-6))
+        """Compute the actor loss using JaxGCRL's approach."""
+        state = batch['observations'][:, :self.config['obs_dim']]
+        goal = batch['actor_goals'][:, self.config['goal_start_idx']:self.config['goal_end_idx']]
+        
+        # Get action distribution from actor
+        dist = self.network.select('actor')(
+            jnp.concatenate([state, goal], axis=-1), 
+            params=grad_params
+        )
+        
+        if self.config['discrete']:
+            actions = batch['actions']
+            log_prob = dist.log_prob(actions)
         else:
+            actions = batch['actions']
+            log_prob = dist.log_prob(actions)
+            
+        # Compute Q-value for actions
+        sa_repr = self.network.select('sa_encoder')(
+            state, 
+            actions,
+            params=grad_params
+        )
+        g_repr = self.network.select('g_encoder')(
+            goal,
+            params=grad_params
+        )
+        
+        q = -jnp.sqrt(jnp.sum((sa_repr - g_repr) ** 2, axis=-1))
+        
+        # Compute actor loss (similar to DDPG+BC approach)
+        q_loss = -q.mean()
+        bc_loss = -self.config['alpha'] * log_prob.mean()
+        actor_loss = q_loss + bc_loss
 
-            def value_transform(x):
-                return x
-
-        if self.config['actor_loss'] == 'awr':
-            # AWR loss.
-            v = value_transform(self.network.select('value')(batch['observations'], batch['actor_goals']))
-            q1, q2 = value_transform(
-                self.network.select('critic')(batch['observations'], batch['actor_goals'], batch['actions'])
-            )
-            q = jnp.minimum(q1, q2)
-            adv = q - v
-
-            exp_a = jnp.exp(adv * self.config['alpha'])
-            exp_a = jnp.minimum(exp_a, 100.0)
-
-            dist = self.network.select('actor')(batch['observations'], batch['actor_goals'], params=grad_params)
-            log_prob = dist.log_prob(batch['actions'])
-
-            actor_loss = -(exp_a * log_prob).mean()
-
-            actor_info = {
-                'actor_loss': actor_loss,
-                'adv': adv.mean(),
-                'bc_log_prob': log_prob.mean(),
-            }
-            if not self.config['discrete']:
-                actor_info.update(
-                    {
-                        'mse': jnp.mean((dist.mode() - batch['actions']) ** 2),
-                        'std': jnp.mean(dist.scale_diag),
-                    }
-                )
-
-            return actor_loss, actor_info
-        elif self.config['actor_loss'] == 'ddpgbc':
-            # DDPG+BC loss.
-            assert not self.config['discrete']
-
-            dist = self.network.select('actor')(batch['observations'], batch['actor_goals'], params=grad_params)
-            if self.config['const_std']:
-                q_actions = jnp.clip(dist.mode(), -1, 1)
-            else:
-                q_actions = jnp.clip(dist.sample(seed=rng), -1, 1)
-            q1, q2 = value_transform(
-                self.network.select('critic')(batch['observations'], batch['actor_goals'], q_actions)
-            )
-            q = jnp.minimum(q1, q2)
-
-            # Normalize Q values by the absolute mean to make the loss scale invariant.
-            q_loss = -q.mean() / jax.lax.stop_gradient(jnp.abs(q).mean() + 1e-6)
-            log_prob = dist.log_prob(batch['actions'])
-
-            bc_loss = -(self.config['alpha'] * log_prob).mean()
-
-            actor_loss = q_loss + bc_loss
-
-            return actor_loss, {
-                'actor_loss': actor_loss,
-                'q_loss': q_loss,
-                'bc_loss': bc_loss,
-                'q_mean': q.mean(),
-                'q_abs_mean': jnp.abs(q).mean(),
-                'bc_log_prob': log_prob.mean(),
-                'mse': jnp.mean((dist.mode() - batch['actions']) ** 2),
-                'std': jnp.mean(dist.scale_diag),
-            }
-        else:
-            raise ValueError(f'Unsupported actor loss: {self.config["actor_loss"]}')
-
-    @jax.jit
-    def total_loss(self, batch, grad_params, rng=None):
-        """Compute the total loss."""
-        info = {}
-        rng = rng if rng is not None else self.rng
-
-        critic_loss, critic_info = self.contrastive_loss(batch, grad_params, 'critic')
-        for k, v in critic_info.items():
-            info[f'critic/{k}'] = v
-
-        if self.config['actor_loss'] == 'awr':
-            value_loss, value_info = self.contrastive_loss(batch, grad_params, 'value')
-            for k, v in value_info.items():
-                info[f'value/{k}'] = v
-        else:
-            value_loss = 0.0
-
-        rng, actor_rng = jax.random.split(rng)
-        actor_loss, actor_info = self.actor_loss(batch, grad_params, actor_rng)
-        for k, v in actor_info.items():
-            info[f'actor/{k}'] = v
-
-        loss = critic_loss + value_loss + actor_loss
-        return loss, info
-
-    @jax.jit
-    def update(self, batch):
-        """Update the agent and return a new agent with information dictionary."""
-        new_rng, rng = jax.random.split(self.rng)
-
-        def loss_fn(grad_params):
-            return self.total_loss(batch, grad_params, rng=rng)
-
-        new_network, info = self.network.apply_loss_fn(loss_fn=loss_fn)
-
-        return self.replace(network=new_network, rng=new_rng), info
-
-    @jax.jit
-    def sample_actions(
-        self,
-        observations,
-        goals=None,
-        seed=None,
-        temperature=1.0,
-    ):
-        """Sample actions from the actor."""
-        dist = self.network.select('actor')(observations, goals, temperature=temperature)
-        actions = dist.sample(seed=seed)
-        if not self.config['discrete']:
-            actions = jnp.clip(actions, -1, 1)
-        return actions
+        return actor_loss, {
+            'actor_loss': actor_loss,
+            'q_loss': q_loss,
+            'bc_loss': bc_loss,
+            'q_mean': q.mean(),
+            'bc_log_prob': log_prob.mean(),
+        }
 
     @classmethod
-    def create(
-        cls,
-        seed,
-        ex_observations,
-        ex_actions,
-        config,
-    ):
-        """Create a new agent.
-
-        Args:
-            seed: Random seed.
-            ex_observations: Example observations.
-            ex_actions: Example batch of actions. In discrete-action MDPs, this should contain the maximum action value.
-            config: Configuration dictionary.
-        """
+    def create(cls, seed, ex_observations, ex_actions, config):
+        """Create a new agent with JaxGCRL architecture."""
         rng = jax.random.PRNGKey(seed)
         rng, init_rng = jax.random.split(rng, 2)
 
-        ex_goals = ex_observations
         if config['discrete']:
             action_dim = ex_actions.max() + 1
         else:
             action_dim = ex_actions.shape[-1]
 
-        # Define encoders.
-        encoders = dict()
-        if config['encoder'] is not None:
-            encoder_module = encoder_modules[config['encoder']]
-            encoders['critic_state'] = encoder_module()
-            encoders['critic_goal'] = encoder_module()
-            encoders['actor'] = GCEncoder(concat_encoder=encoder_module())
-            if config['actor_loss'] == 'awr':
-                encoders['value_state'] = encoder_module()
-                encoders['value_goal'] = encoder_module()
-
-        # Define value and actor networks.
-        if config['discrete']:
-            critic_def = GCDiscreteBilinearCritic(
-                hidden_dims=config['value_hidden_dims'],
-                latent_dim=config['latent_dim'],
-                layer_norm=config['layer_norm'],
-                ensemble=True,
-                value_exp=True,
-                state_encoder=encoders.get('critic_state'),
-                goal_encoder=encoders.get('critic_goal'),
-                action_dim=action_dim,
-            )
-        else:
-            critic_def = JaxGCRLValue(
-                hidden_dims=config['value_hidden_dims'],
-                latent_dim=config['latent_dim'],
-                layer_norm=config['layer_norm'],
-                ensemble=True,
-                value_exp=True,
-                state_encoder=encoders.get('critic_state'),
-                goal_encoder=encoders.get('critic_goal'),
-            )
-
-        if config['actor_loss'] == 'awr':
-            # AWR requires a separate V network to compute advantages (Q - V).
-            value_def = JaxGCRLValue(
-                hidden_dims=config['value_hidden_dims'],
-                latent_dim=config['latent_dim'],
-                layer_norm=config['layer_norm'],
-                ensemble=False,
-                value_exp=True,
-                state_encoder=encoders.get('value_state'),
-                goal_encoder=encoders.get('value_goal'),
-            )
-
-        if config['discrete']:
-            actor_def = GCDiscreteActor(
-                hidden_dims=config['actor_hidden_dims'],
-                action_dim=action_dim,
-                gc_encoder=encoders.get('actor'),
-            )
-        else:
-            actor_def = Actor(
-                action_dim=action_dim,
-                network_width=config['network_width'],
-                network_depth=config['network_depth'],
-                skip_connections=config['skip_connections'],
-                use_relu=config['use_relu'],
-                resnet_type=config.get('resnet_type'),
-                const_std=config['const_std'],
-            )
-
-        network_info = dict(
-            critic=(critic_def, (ex_observations, ex_goals, ex_actions)),
-            actor=(actor_def, (ex_observations, ex_goals)),
+        # Create the networks
+        sa_encoder_def = SA_encoder(
+            network_width=config['network_width'],
+            network_depth=config['network_depth'],
+            skip_connections=config['skip_connections'],
+            use_relu=config['use_relu'],
+            resnet_type=config['resnet_type']
         )
-        if config['actor_loss'] == 'awr':
-            network_info.update(
-                value=(value_def, (ex_observations, ex_goals)),
-            )
-        networks = {k: v[0] for k, v in network_info.items()}
-        network_args = {k: v[1] for k, v in network_info.items()}
+        
+        g_encoder_def = G_encoder(
+            network_width=config['network_width'],
+            network_depth=config['network_depth'],
+            skip_connections=config['skip_connections'],
+            use_relu=config['use_relu'],
+            resnet_type=config['resnet_type']
+        )
+        
+        actor_def = Actor(
+            action_dim=action_dim,
+            network_width=config['network_width'],
+            network_depth=config['network_depth'],
+            skip_connections=config['skip_connections'],
+            use_relu=config['use_relu'],
+            resnet_type=config['resnet_type']
+        )
 
-        network_def = ModuleDict(networks)
+        # Initialize the networks
+        network_def = ModuleDict({
+            'sa_encoder': sa_encoder_def,
+            'g_encoder': g_encoder_def,
+            'actor': actor_def,
+        })
+        
         network_tx = optax.adam(learning_rate=config['lr'])
-        network_params = network_def.init(init_rng, **network_args)['params']
+        
+        # Initialize parameters
+        network_params = network_def.init(
+            init_rng, 
+            sa_encoder=(ex_observations, ex_actions),
+            g_encoder=(ex_observations,),
+            actor=(ex_observations,)
+        )['params']
+        
         network = TrainState.create(network_def, network_params, tx=network_tx)
 
         return cls(rng, network=network, config=flax.core.FrozenDict(**config))
 
-
 def get_config():
+    """Get the configuration for JaxGCRL."""
     config = ml_collections.ConfigDict(
         dict(
-            # Agent hyperparameters.
-            agent_name='crl',  # Agent name.
-            lr=3e-4,  # Learning rate.
-            batch_size=1024,  # Batch size.
-            actor_hidden_dims=(512, 512, 512),  # Actor network hidden dimensions.
-            value_hidden_dims=(512, 512, 512),  # Value network hidden dimensions.
-            latent_dim=512,  # Latent dimension for phi and psi.
-            layer_norm=True,  # Whether to use layer normalization.
-            discount=0.99,  # Discount factor.
-            actor_loss='ddpgbc',  # Actor loss type ('awr' or 'ddpgbc').
-            alpha=0.1,  # Temperature in AWR or BC coefficient in DDPG+BC.
-            actor_log_q=True,  # Whether to maximize log Q (True) or Q itself (False) in the actor loss.
-            discrete=False,  # Whether the action space is discrete.
-            encoder=ml_collections.config_dict.placeholder(str),  # Visual encoder name (None, 'impala_small', etc.).
-
-            # state_dependent_std = True means it will use std_net
-            # state_dependent_std = False and const_std = True means NO stochastic actions
-            # state_dependent_std = False and const_std = False means it will use basically tweak the raw std values themselves, no network. almost like a 0-layer network
-            state_dependent_std=False, # Whether to use state-dependent standard deviation for the actor.
-            const_std=True,  # Whether to use constant standard deviation for the actor.
-            resnet_type="resnet",  # Type of residual connections
-            network_width=512,  # Using standard size from hidden_dims
-            network_depth=4,    # Derived from standard hidden_dims length
+            agent_name='jaxgcrl',
+            lr=3e-4,
+            batch_size=256,
+            network_width=256,
+            network_depth=4,
             skip_connections=4,
             use_relu=False,
-
-            # Dataset hyperparameters.
-            dataset_class='GCDataset',  # Dataset class name.
-            value_p_curgoal=0.0,  # Probability of using the current state as the value goal.
-            value_p_trajgoal=1.0,  # Probability of using a future state in the same trajectory as the value goal.
-            value_p_randomgoal=0.0,  # Probability of using a random state as the value goal.
-            value_geom_sample=True,  # Whether to use geometric sampling for future value goals.
-            actor_p_curgoal=0.0,  # Probability of using the current state as the actor goal.
-            actor_p_trajgoal=1.0,  # Probability of using a future state in the same trajectory as the actor goal.
-            actor_p_randomgoal=0.0,  # Probability of using a random state as the actor goal.
-            actor_geom_sample=False,  # Whether to use geometric sampling for future actor goals.
-            gc_negative=False,  # Unused (defined for compatibility with GCDataset).
-            p_aug=0.0,  # Probability of applying image augmentation.
-            frame_stack=ml_collections.config_dict.placeholder(int),  # Number of frames to stack.
+            resnet_type="resnet",
+            latent_dim=64,
+            layer_norm=True,
+            discount=0.99,
+            alpha=0.1,
+            discrete=False,
+            obs_dim=29,  # Will be set by environment
+            goal_start_idx=0,  # Will be set by environment
+            goal_end_idx=2,    # Will be set by environment
+            encoder=None,
+            dataset_class='GCDataset',
         )
     )
     return config
