@@ -31,6 +31,12 @@ AGENT_PATH="agents/crl.py"
 AGENT_ALPHA=0.1
 AGENT_DISCOUNT=0.995
 
+# New agent architecture parameters
+AGENT_USE_JAX="False"
+AGENT_RESNET_TYPE="resnet"
+AGENT_STATE_DEP_STD="False"
+AGENT_CONST_STD="True"
+
 SEED=-1
 NUM_SEEDS=2
 
@@ -52,6 +58,10 @@ for NUM in $(seq 1 ${NUM_SEEDS}); do
         --agent=${AGENT_PATH} \
         --agent.alpha=${AGENT_ALPHA} \
         --agent.discount=${AGENT_DISCOUNT} \
+        --agent.state_dependent_std=${AGENT_STATE_DEP_STD} \
+        --agent.const_std=${AGENT_CONST_STD} \
+        --agent.resnet_type=${AGENT_RESNET_TYPE} \
+        --agent.use_JAX_Arch=${AGENT_USE_JAX} \
         --wandb_project_name=${WANDB_PROJECT_NAME} \
         --run_group=${RUN_GROUP} \
         --wandb_mode=${WANDB_MODE} \

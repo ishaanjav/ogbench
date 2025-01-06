@@ -139,7 +139,172 @@ class RunningMeanStd(flax.struct.PyTreeNode):
 
         return self.replace(mean=new_mean, var=new_var, count=total_count)
 
+lecun_uniform = variance_scaling(1/3, "fan_in", "uniform")
+bias_init = nn.initializers.zeros
+# original code
+def residual_block(x, width, normalize, activation, num_layers):
+    identity = x
+    # Apply num_layers dense layers
+    for _ in range(num_layers):
+        x = nn.Dense(width, kernel_init=lecun_uniform, bias_init=bias_init)(x)
+        x = normalize(x)
+        x = activation(x)
+    x = x + identity  # Skip connection
+    return x
 
+# no resnet
+def standard_block(x, width, num_layers, normalize, activation, lecun_uniform, bias_init):
+    for _ in range(num_layers):
+        x = nn.Dense(width, kernel_init=lecun_uniform, bias_init=bias_init)(x)
+        x = normalize(x)
+        x = activation(x)
+    return x
+
+# our (JaxGCRL) implementation of the resnet block
+def resnet_block(x, width, num_layers, normalize, activation, lecun_uniform, bias_init):
+    identity = x
+    for _ in range(num_layers):
+        x = nn.Dense(width, kernel_init=lecun_uniform, bias_init=bias_init)(x)
+        x = normalize(x)
+        x = activation(x)
+    return x + identity
+
+# from the original paper
+def resnet_orig_block(x, width, num_layers, normalize, activation, lecun_uniform, bias_init):
+    identity = x
+    for i in range(num_layers):
+        x = nn.Dense(width, kernel_init=lecun_uniform, bias_init=bias_init)(x)
+        x = normalize(x)
+        if i == num_layers - 1:
+            x = x + identity
+        x = activation(x)
+    return x
+
+# from the identity mapping paper
+def identity_mapping_block(x, width, num_layers, normalize, activation, lecun_uniform, bias_init):
+    identity = x
+    for i in range(num_layers):
+        x = normalize(x)
+        x = activation(x)
+        x = nn.Dense(width, kernel_init=lecun_uniform, bias_init=bias_init)(x)
+        if i == num_layers - 1:
+            x = x + identity
+    x = normalize(x)
+    x = activation(x)
+    return x
+
+# From JaxGCRL implementation
+class Actor(nn.Module):
+    """Goal-conditioned actor with customizable ResNet architecture.
+    
+    Attributes:
+        action_dim: Action dimension.
+        hidden_dims: Hidden layer dimensions (replaced by network_width & depth).
+        network_width: Width of network layers.
+        network_depth: Total number of layers.
+        skip_connections: Number of layers per residual block.
+        use_relu: Whether to use ReLU (False uses swish).
+        resnet_type: Type of residual connections ("resnet", "noresnet", "resnetOrig", "identityMapping").
+        log_std_min: Minimum log standard deviation.
+        log_std_max: Maximum log standard deviation.
+        state_dependent_std: Whether to use state-dependent standard deviation.
+        const_std: Whether to use constant standard deviation.
+        gc_encoder: Optional GCEncoder module to encode the inputs.
+    """
+    
+    action_dim: int
+    hidden_dims: Sequence[int] = None  # Kept for compatibility but unused
+    network_width: int = 1024
+    network_depth: int = 4
+    skip_connections: int = 4
+    use_relu: bool = False
+    resnet_type: str = "resnet"
+    log_std_min: float = -5
+    log_std_max: float = 2
+    state_dependent_std: bool = False
+    const_std: bool = True
+    gc_encoder: nn.Module = None
+
+    def setup(self):
+        self.lecun_uniform = variance_scaling(1/3, "fan_in", "uniform")
+        self.bias_init = nn.initializers.zeros
+        self.normalize = nn.LayerNorm()
+        self.activation = nn.relu if self.use_relu else nn.swish
+
+        # Select residual block type
+        if self.resnet_type == "noresnet":
+            self.residual_block = standard_block
+        elif self.resnet_type == "resnet":
+            self.residual_block = resnet_block
+        elif self.resnet_type == "resnetOrig":
+            self.residual_block = resnet_orig_block
+        elif self.resnet_type == "identityMapping":
+            self.residual_block = identity_mapping_block
+        else:
+            raise ValueError(f"Invalid resnet type: {self.resnet_type}")
+
+    def __call__(self, observations, goals=None, goal_encoded=False, temperature=1.0):
+        """Return the action distribution.
+        
+        Args:
+            observations: Observations.
+            goals: Goals (optional).
+            goal_encoded: Whether the goals are already encoded.
+            temperature: Scaling factor for the standard deviation.
+        """
+        # NOTE: The original GCActor uses the GC_Encoder (specifically concat_encoder) as defined encoders.py
+        #   We will be using our own, original Actor network which "encodes" the state + goal in the first layer itself
+        # if self.gc_encoder is not None:
+        #     x = self.gc_encoder(observations, goals, goal_encoded=goal_encoded)
+        # else:
+        #     inputs = [observations]
+        #     if goals is not None:
+        #         inputs.append(goals)
+        #     x = jnp.concatenate(inputs, axis=-1)
+
+        # Concatenate the state and goal
+        x = jnp.concatenate([observations, goals], axis=-1)
+
+        # Initial layer
+        x = nn.Dense(self.network_width, kernel_init=self.lecun_uniform, bias_init=self.bias_init)(x)
+        x = self.normalize(x)
+        x = self.activation(x)
+
+        # Use skip_connections to determine layers per block
+        num_blocks = self.network_depth // self.skip_connections
+        remainder = self.network_depth % self.skip_connections
+        
+        for _ in range(num_blocks):
+            x = self.residual_block(
+                x, 
+                self.network_width, 
+                self.skip_connections, 
+                self.normalize, 
+                self.activation, 
+                self.lecun_uniform, 
+                self.bias_init
+            )
+
+        # Remainder layers
+        # TODO: this should follow the same patterns of the 4 above
+        for i in range(remainder):
+            x = nn.Dense(self.network_width, kernel_init=self.lecun_uniform, bias_init=self.bias_init)(x)
+            x = self.normalize(x)
+            x = self.activation(x)
+
+        mean = nn.Dense(self.action_dim, kernel_init=self.lecun_uniform, bias_init=self.bias_init)(x)
+        log_std = nn.Dense(self.action_dim, kernel_init=self.lecun_uniform, bias_init=self.bias_init)(x)
+        
+        log_std = nn.tanh(log_std)
+        log_std = self.log_std_min + 0.5 * (self.log_std_max - self.log_std_min) * (log_std + 1)
+
+        distribution = distrax.MultivariateNormalDiag(
+            loc=mean, 
+            scale_diag=jnp.exp(log_std) * temperature
+        )
+        
+        return distribution
+    
 class GCActor(nn.Module):
     """Goal-conditioned actor.
 
@@ -189,9 +354,9 @@ class GCActor(nn.Module):
             goal_encoded: Whether the goals are already encoded.
             temperature: Scaling factor for the standard deviation.
         """
-        if self.gc_encoder is not None:
+        if self.gc_encoder is not None: # this is typically only for visual environments
             inputs = self.gc_encoder(observations, goals, goal_encoded=goal_encoded)
-        else:
+        else: 
             inputs = [observations]
             if goals is not None:
                 inputs.append(goals)

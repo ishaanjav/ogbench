@@ -275,24 +275,15 @@ class CRLAgent(flax.struct.PyTreeNode):
                 gc_encoder=encoders.get('actor'),
             )
         else:
-            if config.get('use_JAX_Arch', False):  # Use new Actor if use_JAX_Arch is True
-                actor_def = Actor(
-                    action_dim=action_dim,
-                    network_width=512,  # Using standard size from hidden_dims
-                    network_depth=4,    # Derived from standard hidden_dims length
-                    skip_connections=4,
-                    resnet_type=config.get('resnet_type', 'resnet'),
-                    const_std=config['const_std'],
-                    gc_encoder=encoders.get('actor'),
-                )
-            else:
-                actor_def = GCActor(
-                    hidden_dims=config['actor_hidden_dims'],
-                    action_dim=action_dim,
-                    state_dependent_std=False,
-                    const_std=config['const_std'],
-                    gc_encoder=encoders.get('actor'), # This is None, since config['encoder'] is None
-                )
+            actor_def = Actor(
+                action_dim=action_dim,
+                network_width=512,  # Using standard size from hidden_dims
+                network_depth=4,    # Derived from standard hidden_dims length
+                skip_connections=4,
+                resnet_type=config.get('resnet_type', 'resnet'),
+                const_std=config['const_std'],
+                gc_encoder=encoders.get('actor'),
+            )
 
         network_info = dict(
             critic=(critic_def, (ex_observations, ex_goals, ex_actions)),
@@ -337,7 +328,6 @@ def get_config():
             state_dependent_std=False, # Whether to use state-dependent standard deviation for the actor.
             const_std=True,  # Whether to use constant standard deviation for the actor.
             resnet_type="resnet",  # Type of residual connections
-            use_JAX_Arch=False,  # Whether to use the JAX actor architecture
 
             # Dataset hyperparameters.
             dataset_class='GCDataset',  # Dataset class name.
