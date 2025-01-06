@@ -5,7 +5,7 @@ import flax
 import flax.linen as nn
 import jax
 import jax.numpy as jnp
-
+from flax.linen.initializers import variance_scaling
 
 def default_init(scale=1.0):
     """Default kernel initializer."""
@@ -193,6 +193,24 @@ def identity_mapping_block(x, width, num_layers, normalize, activation, lecun_un
     x = activation(x)
     return x
 
+def standard_layer(x, width, normalize, activation, lecun_uniform, bias_init):
+    x = nn.Dense(width, kernel_init=lecun_uniform, bias_init=bias_init)(x)
+    x = normalize(x)
+    x = activation(x)
+    return x
+
+def resnet_layer(x, width, normalize, activation, lecun_uniform, bias_init):
+    x = nn.Dense(width, kernel_init=lecun_uniform, bias_init=bias_init)(x)
+    x = normalize(x)
+    x = activation(x)
+    return x
+
+def identity_mapping_layer(x, width, normalize, activation, lecun_uniform, bias_init):
+    x = normalize(x)
+    x = activation(x)
+    x = nn.Dense(width, kernel_init=lecun_uniform, bias_init=bias_init)(x)
+    return x
+
 # From JaxGCRL implementation
 class Actor(nn.Module):
     """Goal-conditioned actor with customizable ResNet architecture.
@@ -202,7 +220,7 @@ class Actor(nn.Module):
         hidden_dims: Hidden layer dimensions (replaced by network_width & depth).
         network_width: Width of network layers.
         network_depth: Total number of layers.
-        skip_connections: Number of layers per residual block.
+        skip_connection_frequency: Number of layers per residual block.
         use_relu: Whether to use ReLU (False uses swish).
         resnet_type: Type of residual connections ("resnet", "noresnet", "resnetOrig", "identityMapping").
         log_std_min: Minimum log standard deviation.
@@ -216,7 +234,7 @@ class Actor(nn.Module):
     hidden_dims: Sequence[int] = None  # Kept for compatibility but unused
     network_width: int = 1024
     network_depth: int = 4
-    skip_connections: int = 4
+    skip_connection_frequency: int = 4
     use_relu: bool = False
     resnet_type: str = "resnet"
     log_std_min: float = -5
@@ -233,12 +251,16 @@ class Actor(nn.Module):
         # Select residual block type
         if self.resnet_type == "noresnet":
             self.residual_block = standard_block
+            self.layer = standard_layer
         elif self.resnet_type == "resnet":
             self.residual_block = resnet_block
+            self.layer = resnet_layer
         elif self.resnet_type == "resnetOrig":
             self.residual_block = resnet_orig_block
+            self.layer = resnet_layer
         elif self.resnet_type == "identityMapping":
             self.residual_block = identity_mapping_block
+            self.layer = identity_mapping_layer
         else:
             raise ValueError(f"Invalid resnet type: {self.resnet_type}")
 
@@ -269,15 +291,15 @@ class Actor(nn.Module):
         x = self.normalize(x)
         x = self.activation(x)
 
-        # Use skip_connections to determine layers per block
-        num_blocks = self.network_depth // self.skip_connections
-        remainder = self.network_depth % self.skip_connections
+        # Use skip_connection_frequency to determine layers per block
+        num_blocks = self.network_depth // self.skip_connection_frequency
+        remainder = self.network_depth % self.skip_connection_frequency
         
         for _ in range(num_blocks):
             x = self.residual_block(
                 x, 
                 self.network_width, 
-                self.skip_connections, 
+                self.skip_connection_frequency, 
                 self.normalize, 
                 self.activation, 
                 self.lecun_uniform, 
@@ -287,9 +309,7 @@ class Actor(nn.Module):
         # Remainder layers
         # TODO: this should follow the same patterns of the 4 above
         for i in range(remainder):
-            x = nn.Dense(self.network_width, kernel_init=self.lecun_uniform, bias_init=self.bias_init)(x)
-            x = self.normalize(x)
-            x = self.activation(x)
+            x = self.layer(x, self.network_width, self.normalize, self.activation, self.lecun_uniform, self.bias_init)
 
         mean = nn.Dense(self.action_dim, kernel_init=self.lecun_uniform, bias_init=self.bias_init)(x)
         log_std = nn.Dense(self.action_dim, kernel_init=self.lecun_uniform, bias_init=self.bias_init)(x)
@@ -488,37 +508,192 @@ class GCDiscreteCritic(GCValue):
         return super().__call__(observations, goals, actions)
 
 
-class JaxGCRLValue(nn.Module):
-    """Goal-conditioned bilinear value/critic function.
+class SA_encoder(nn.Module):
+    norm_type = "layer_norm"
+    network_width: int = 1024
+    network_depth: int = 4
+    skip_connection_frequency: int = 4  # Default to 4 layers per block
+    use_relu: int = 0
+    resnet_type: str = "resnet"  # Options: "resnet", "noresnet", "resnetOrig", "identityMapping"
+    latent_dim: int = 64
 
-    This module computes the value function as V(s, g) = phi(s)^T psi(g) / sqrt(d) or the critic function as
-    Q(s, a, g) = phi(s, a)^T psi(g) / sqrt(d), where phi and psi output d-dimensional vectors.
+    def setup(self):
+        self.lecun_uniform = variance_scaling(1/3, "fan_in", "uniform")
+        self.bias_init = nn.initializers.zeros
+        self.normalize = nn.LayerNorm() if self.norm_type == "layer_norm" else lambda x: x
+        self.activation = nn.relu if self.use_relu else nn.swish
+
+        # Select residual block type
+        if self.resnet_type == "noresnet":
+            self.residual_block = standard_block
+            self.layer = standard_layer
+        elif self.resnet_type == "resnet":
+            self.residual_block = resnet_block
+            self.layer = resnet_layer
+        elif self.resnet_type == "resnetOrig":
+            self.residual_block = resnet_orig_block
+            self.layer = resnet_layer
+        elif self.resnet_type == "identityMapping":
+            self.residual_block = identity_mapping_block
+            self.layer = identity_mapping_layer
+        else:
+            raise ValueError(f"Invalid resnet type: {self.resnet_type}")
+
+    @nn.compact
+    def __call__(self, s: jnp.ndarray, a: jnp.ndarray):
+        x = jnp.concatenate([s, a], axis=-1)
+        
+        # Initial layer
+        x = nn.Dense(self.network_width, kernel_init=self.lecun_uniform, bias_init=self.bias_init)(x)
+        x = self.normalize(x)
+        x = self.activation(x)
+
+        # Use skip_connection_frequency to determine layers per block
+        num_blocks = self.network_depth // self.skip_connection_frequency
+        remainder = self.network_depth % self.skip_connection_frequency
+        
+        for _ in range(num_blocks):
+            x = self.residual_block(
+                x, 
+                self.network_width, 
+                self.skip_connection_frequency, 
+                self.normalize, 
+                self.activation, 
+                self.lecun_uniform, 
+                self.bias_init
+            )
+        # Remainder layers
+        for i in range(remainder):
+            x = self.layer(x, self.network_width, self.normalize, self.activation, self.lecun_uniform, self.bias_init)
+        #Final layer
+        x = nn.Dense(self.latent_dim, kernel_init=self.lecun_uniform, bias_init=self.bias_init)(x)
+        return x
+    
+class G_encoder(nn.Module):
+    norm_type: str = "layer_norm"
+    network_width: int = 1024
+    network_depth: int = 4
+    skip_connection_frequency: int = 4
+    use_relu: int = 0
+    resnet_type: str = "resnet"  # Options: "resnet", "noresnet", "resnetOrig", "identityMapping"
+    latent_dim: int = 64
+    def setup(self):
+        self.lecun_uniform = variance_scaling(1/3, "fan_in", "uniform")
+        self.bias_init = nn.initializers.zeros
+        self.normalize = nn.LayerNorm() if self.norm_type == "layer_norm" else lambda x: x
+        self.activation = nn.relu if self.use_relu else nn.swish
+
+        # Select residual block type
+        if self.resnet_type == "noresnet":
+            self.residual_block = standard_block
+            self.layer = standard_layer
+        elif self.resnet_type == "resnet":
+            self.residual_block = resnet_block
+            self.layer = resnet_layer
+        elif self.resnet_type == "resnetOrig":
+            self.residual_block = resnet_orig_block
+            self.layer = resnet_layer
+        elif self.resnet_type == "identityMapping":
+            self.residual_block = identity_mapping_block
+            self.layer = identity_mapping_layer
+        else:
+            raise ValueError(f"Invalid resnet type: {self.resnet_type}")
+
+    @nn.compact
+    def __call__(self, g: jnp.ndarray):
+        x = g
+        
+        # Initial layer
+        x = nn.Dense(self.network_width, kernel_init=self.lecun_uniform, bias_init=self.bias_init)(x)
+        x = self.normalize(x)
+        x = self.activation(x)
+
+        # Use skip_connection_frequency to determine layers per block
+        num_blocks = self.network_depth // self.skip_connection_frequency
+        remainder = self.network_depth % self.skip_connection_frequency
+        
+        for _ in range(num_blocks):
+            x = self.residual_block(
+                x, 
+                self.network_width, 
+                self.skip_connection_frequency, 
+                self.normalize, 
+                self.activation, 
+                self.lecun_uniform, 
+                self.bias_init
+            )
+        # Remainder layers
+        for i in range(remainder):
+            x = self.layer(x, self.network_width, self.normalize, self.activation, self.lecun_uniform, self.bias_init)
+        #Final layer
+        x = nn.Dense(self.latent_dim, kernel_init=self.lecun_uniform, bias_init=self.bias_init)(x)
+        return x
+
+
+class JaxGCRLValue(nn.Module):
+    """Goal-conditioned bilinear value/critic function using SA_encoder and G_encoder.
 
     Attributes:
-        hidden_dims: Hidden layer dimensions.
-        latent_dim: Latent dimension.
-        layer_norm: Whether to apply layer normalization.
+        hidden_dims: Hidden layer dimensions (kept for compatibility but unused).
         ensemble: Whether to ensemble the value function.
-        value_exp: Whether to exponentiate the value. Useful for contrastive learning.
-        state_encoder: Optional state encoder.
-        goal_encoder: Optional goal encoder.
+        value_exp: Whether to exponentiate the value.
+        network_width: Width of network layers for both encoders.
+        network_depth: Total number of layers for both encoders.
+        skip_connection_frequency: Number of layers per residual block for both encoders.
+        use_relu: Whether to use ReLU (False uses swish) for both encoders.
+        resnet_type: Type of residual connections for both encoders.
+        latent_dim: Dimension of the latent space for both encoders.
     """
 
-    hidden_dims: Sequence[int]
-    latent_dim: int
-    layer_norm: bool = True
+    hidden_dims: Sequence[int]  # Kept for backward compatibility
     ensemble: bool = True
     value_exp: bool = False
-    state_encoder: nn.Module = None
-    goal_encoder: nn.Module = None
+    # Network parameters for encoders
+    network_width: int = 1024
+    network_depth: int = 4
+    skip_connection_frequency: int = 4
+    use_relu: int = 0
+    resnet_type: str = "resnet"
+    embedding_dim: int = 64  # Single definition of latent_dim
 
     def setup(self) -> None:
-        mlp_module = MLP
-        if self.ensemble:
-            mlp_module = ensemblize(mlp_module, 2)
+        encoder_module = lambda: SA_encoder(
+            network_width=self.network_width,
+            network_depth=self.network_depth,
+            skip_connection_frequency=self.skip_connection_frequency,
+            use_relu=self.use_relu,
+            resnet_type=self.resnet_type,
+            latent_dim=self.embedding_dim  # Pass through the single embedding_dim
+        )
+        goal_encoder_module = lambda: G_encoder(
+            network_width=self.network_width,
+            network_depth=self.network_depth,
+            skip_connection_frequency=self.skip_connection_frequency,
+            use_relu=self.use_relu,
+            resnet_type=self.resnet_type,
+            latent_dim=self.embedding_dim  # Pass through the single embedding_dim
+        )
 
-        self.phi = mlp_module((*self.hidden_dims, self.latent_dim), activate_final=False, layer_norm=self.layer_norm)
-        self.psi = mlp_module((*self.hidden_dims, self.latent_dim), activate_final=False, layer_norm=self.layer_norm)
+        if self.ensemble:
+            self.phi = nn.vmap(
+                encoder_module,
+                variable_axes={'params': 0},
+                split_rngs={'params': True},
+                in_axes=None,
+                out_axes=0,
+                axis_size=2
+            )
+            self.psi = nn.vmap(
+                goal_encoder_module,
+                variable_axes={'params': 0},
+                split_rngs={'params': True},
+                in_axes=None,
+                out_axes=0,
+                axis_size=2
+            )
+        else:
+            self.phi = encoder_module()
+            self.psi = goal_encoder_module()
 
     def __call__(self, observations, goals, actions=None, info=False):
         """Return the value/critic function.
@@ -531,13 +706,14 @@ class JaxGCRLValue(nn.Module):
         """
         if actions is None:
             phi_inputs = observations
+            phi = self.phi(phi_inputs, jnp.zeros_like(phi_inputs))  # Pass dummy action
         else:
-            phi_inputs = jnp.concatenate([observations, actions], axis=-1)
+            phi = self.phi(observations, actions)
 
-        phi = self.phi(phi_inputs)
         psi = self.psi(goals)
 
-        v = (phi * psi / jnp.sqrt(self.latent_dim)).sum(axis=-1)
+        # Note: Both encoders output 64-dimensional vectors, so we use that as embedding_dim
+        v = (phi * psi / jnp.sqrt(self.embedding_dim)).sum(axis=-1)
 
         if self.value_exp:
             v = jnp.exp(v)
