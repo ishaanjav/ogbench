@@ -71,6 +71,9 @@ class JAXGCRLAgent(flax.struct.PyTreeNode):
     def actor_loss(self, batch, grad_params, rng=None):
         """Compute the actor loss (AWR or DDPG+BC)."""
         # Maximize log Q if actor_log_q is True (which is default).
+        if self.config['loss_version'] == 'simplest':
+            return self.actor_loss1(batch, grad_params, rng)
+
         if self.config['actor_log_q']:
 
             def value_transform(x):
@@ -142,8 +145,10 @@ class JAXGCRLAgent(flax.struct.PyTreeNode):
             q_loss = -q.mean() / jax.lax.stop_gradient(jnp.abs(q).mean() + 1e-6)
             log_prob = dist.log_prob(batch['actions'])
 
-            # bc_loss = -(self.config['alpha'] * log_prob).mean()
-            bc_loss = 0
+            if self.config['loss_version'] == 'no_bc':
+                bc_loss = 0
+            elif self.config['loss_version'] == 'bc':
+                bc_loss = -(self.config['alpha'] * log_prob).mean()
             actor_loss = q_loss + bc_loss
 
             return actor_loss, {
@@ -163,6 +168,15 @@ class JAXGCRLAgent(flax.struct.PyTreeNode):
     def actor_loss1(self, batch, grad_params, rng=None):
         """Compute the actor loss (DDPG+BC)."""
         assert not self.config['discrete']
+
+        if self.config['actor_log_q']:
+
+            def value_transform(x):
+                return jnp.log(jnp.maximum(x, 1e-6))
+        else:
+
+            def value_transform(x):
+                return x
 
         dist = self.network.select('actor')(batch['observations'], batch['actor_goals'], params=grad_params)
         if self.config['const_std']:
@@ -402,6 +416,9 @@ def get_config():
             layer_norm=True,  # Whether to use layer normalization.
             discount=0.99,  # Discount factor.
             actor_loss='ddpgbc',  # Actor loss type ('awr' or 'ddpgbc').
+
+            loss_version='a',
+
             alpha=0.1,  # Temperature in AWR or BC coefficient in DDPG+BC.
             actor_log_q=True,  # Whether to maximize log Q (True) or Q itself (False) in the actor loss.
             discrete=False,  # Whether the action space is discrete.

@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=AM_GiaNR
+#SBATCH --job-name=AM_GiaNS
 #SBATCH --nodes=5                # node count
 #SBATCH --ntasks=1
 #SBATCH --gres=gpu:1
@@ -23,7 +23,7 @@ wandb online
 # Define variables for the experiment
 ENV_NAME="antmaze-giant-navigate-v0"
 WANDB_PROJECT_NAME="Ant-Maze-Giant-Navigate"
-RUN_GROUP="JAXGCRL-2"
+RUN_GROUP="JAXGCRL-Simplest"
 WANDB_MODE="offline"
 EVAL_EPISODES=50
 AGENT_PATH="agents/jaxgcrl.py"
@@ -72,6 +72,7 @@ for NUM in $(seq 1 ${NUM_SEEDS}); do
         --agent.latent_dim=${AGENT_LATENT_DIM} \
         --agent.state_dependent_std=${AGENT_STATE_DEP_STD} \
         --agent.const_std=${AGENT_CONST_STD} \
+        --agent.loss_version=simplest \
         --wandb_project_name=${WANDB_PROJECT_NAME} \
         --run_group=${RUN_GROUP} \
         --wandb_mode=${WANDB_MODE} \
