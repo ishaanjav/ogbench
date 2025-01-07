@@ -8,7 +8,7 @@ import optax
 from utils.encoders import GCEncoder, encoder_modules
 from utils.flax_utils import ModuleDict, TrainState, nonpytree_field
 from utils.networks import GCActor, GCBilinearValue, GCDiscreteActor, GCDiscreteBilinearCritic
-
+import sys
 
 class CRLAgent(flax.struct.PyTreeNode):
     """Contrastive RL (CRL) agent.
@@ -222,9 +222,21 @@ class CRLAgent(flax.struct.PyTreeNode):
         else:
             action_dim = ex_actions.shape[-1]
 
+        # Populate hidden dims based on num_hidden_layers
+        if config['actor_hidden_dims'] is None:
+            config['actor_hidden_dims'] = tuple([512] * config['num_hidden_layers'])
+        if config['value_hidden_dims'] is None:
+            config['value_hidden_dims'] = tuple([512] * config['num_hidden_layers'])
+
+        # Add logging to show which networks are being used
+        print("\n=== Initializing Network Architecture ===")
+        sys.stdout.flush()
+
         # Define encoders.
         encoders = dict()
         if config['encoder'] is not None:
+            print("Using visual encoders")
+            sys.stdout.flush()
             encoder_module = encoder_modules[config['encoder']]
             encoders['critic_state'] = encoder_module()
             encoders['critic_goal'] = encoder_module()
@@ -235,6 +247,8 @@ class CRLAgent(flax.struct.PyTreeNode):
 
         # Define value and actor networks.
         if config['discrete']:
+            print("Critic: GCDiscreteBilinearCritic")
+            sys.stdout.flush()
             critic_def = GCDiscreteBilinearCritic(
                 hidden_dims=config['value_hidden_dims'],
                 latent_dim=config['latent_dim'],
@@ -246,6 +260,15 @@ class CRLAgent(flax.struct.PyTreeNode):
                 action_dim=action_dim,
             )
         else:
+            print("\nInitializing Critic:")
+            print("Type: GCBilinearValue")
+            print(f"Network Configuration:")
+            print(f"  - Hidden dims: {config['value_hidden_dims']}")
+            print(f"  - Latent dim: {config['latent_dim']}")
+            print(f"  - Layer norm: {config['layer_norm']}")
+            print(f"  - Ensemble: True")
+            print(f"  - Value exp: True")
+            sys.stdout.flush()
             critic_def = GCBilinearValue(
                 hidden_dims=config['value_hidden_dims'],
                 latent_dim=config['latent_dim'],
@@ -257,7 +280,15 @@ class CRLAgent(flax.struct.PyTreeNode):
             )
 
         if config['actor_loss'] == 'awr':
-            # AWR requires a separate V network to compute advantages (Q - V).
+            print("\nInitializing Value Network (for AWR):")
+            print("Type: GCBilinearValue")
+            print(f"Network Configuration:")
+            print(f"  - Hidden dims: {config['value_hidden_dims']}")
+            print(f"  - Latent dim: {config['latent_dim']}")
+            print(f"  - Layer norm: {config['layer_norm']}")
+            print(f"  - Ensemble: False")
+            print(f"  - Value exp: True")
+            sys.stdout.flush()
             value_def = GCBilinearValue(
                 hidden_dims=config['value_hidden_dims'],
                 latent_dim=config['latent_dim'],
@@ -269,19 +300,32 @@ class CRLAgent(flax.struct.PyTreeNode):
             )
 
         if config['discrete']:
+            print("Actor: GCDiscreteActor")
+            sys.stdout.flush()
             actor_def = GCDiscreteActor(
                 hidden_dims=config['actor_hidden_dims'],
                 action_dim=action_dim,
                 gc_encoder=encoders.get('actor'),
             )
         else:
+            print("\nInitializing Actor:")
+            print("Type: GCActor")
+            print(f"Network Configuration:")
+            print(f"  - Hidden dims: {config['actor_hidden_dims']}")
+            print(f"  - Action dim: {action_dim}")
+            print(f"  - State dependent std: {config['state_dependent_std']}")
+            print(f"  - Constant std: {config['const_std']}")
+            sys.stdout.flush()
             actor_def = GCActor(
                 hidden_dims=config['actor_hidden_dims'],
                 action_dim=action_dim,
                 state_dependent_std=False,
                 const_std=config['const_std'],
-                gc_encoder=encoders.get('actor'), # This is None, since config['encoder'] is None
+                gc_encoder=encoders.get('actor'),
             )
+
+        print("\n====================================")
+        sys.stdout.flush()
 
         network_info = dict(
             critic=(critic_def, (ex_observations, ex_goals, ex_actions)),
@@ -309,8 +353,9 @@ def get_config():
             agent_name='crl',  # Agent name.
             lr=3e-4,  # Learning rate.
             batch_size=1024,  # Batch size.
-            actor_hidden_dims=(512, 512, 512),  # Actor network hidden dimensions.
-            value_hidden_dims=(512, 512, 512),  # Value network hidden dimensions.
+            num_hidden_layers=3,  # Add default value
+            actor_hidden_dims=None,  # Will be populated based on num_hidden_layers
+            value_hidden_dims=None,  # Will be populated based on num_hidden_layers
             latent_dim=512,  # Latent dimension for phi and psi.
             layer_norm=True,  # Whether to use layer normalization.
             discount=0.99,  # Discount factor.
