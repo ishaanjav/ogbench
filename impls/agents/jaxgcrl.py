@@ -142,7 +142,8 @@ class JAXGCRLAgent(flax.struct.PyTreeNode):
             q_loss = -q.mean() / jax.lax.stop_gradient(jnp.abs(q).mean() + 1e-6)
             log_prob = dist.log_prob(batch['actions'])
 
-            bc_loss = -(self.config['alpha'] * log_prob).mean()
+            # bc_loss = -(self.config['alpha'] * log_prob).mean()
+            bc_loss = 0
             actor_loss = q_loss + bc_loss
 
             return actor_loss, {
@@ -157,6 +158,39 @@ class JAXGCRLAgent(flax.struct.PyTreeNode):
             }
         else:
             raise ValueError(f'Unsupported actor loss: {self.config["actor_loss"]}')
+
+
+    def actor_loss1(self, batch, grad_params, rng=None):
+        """Compute the actor loss (DDPG+BC)."""
+        assert not self.config['discrete']
+
+        dist = self.network.select('actor')(batch['observations'], batch['actor_goals'], params=grad_params)
+        if self.config['const_std']:
+            q_actions = jnp.clip(dist.mode(), -1, 1)
+        else:
+            q_actions = jnp.clip(dist.sample(seed=rng), -1, 1)
+        
+        # Get Q-values from critic
+        q = value_transform(
+            self.network.select('critic')(batch['observations'], batch['actor_goals'], q_actions)
+        )
+        
+        # Simpler Q-loss without the normalization/stop_gradient
+        q_loss = -q.mean()
+        log_prob = dist.log_prob(batch['actions'])
+        bc_loss = -(self.config['alpha'] * log_prob).mean()
+
+        actor_loss = q_loss + bc_loss
+
+        return actor_loss, {
+            'actor_loss': actor_loss,
+            'q_loss': q_loss,
+            'bc_loss': bc_loss,
+            'q_mean': q.mean(),
+            'bc_log_prob': log_prob.mean(),
+            'mse': jnp.mean((dist.mode() - batch['actions']) ** 2),
+            'std': jnp.mean(dist.scale_diag),
+        }
 
     @jax.jit
     def total_loss(self, batch, grad_params, rng=None):

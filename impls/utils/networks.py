@@ -296,16 +296,23 @@ class Actor(nn.Module):
         num_blocks = self.network_depth // self.skip_connection_frequency
         remainder = self.network_depth % self.skip_connection_frequency
         
-        for _ in range(num_blocks):
-            x = self.residual_block(
-                x, 
-                self.network_width, 
-                self.skip_connection_frequency, 
-                self.normalize, 
-                self.activation, 
-                self.lecun_uniform, 
-                self.bias_init
-            )
+        # for _ in range(num_blocks):
+        #     x = self.residual_block(
+        #         x, 
+        #         self.network_width, 
+        #         self.skip_connection_frequency, 
+        #         self.normalize, 
+        #         self.activation, 
+        #         self.lecun_uniform, 
+        #         self.bias_init
+        #     )
+        identity = x
+        for i in range(self.network_depth):
+            x = nn.Dense(self.network_width, kernel_init=self.lecun_uniform, bias_init=self.bias_init)(x)
+            x = self.normalize(x)
+            if i == self.network_depth - 1:
+                x = x + identity
+            x = self.activation(x)
 
         # Remainder layers
         # TODO: this should follow the same patterns of the 4 above
@@ -558,16 +565,23 @@ class SA_encoder(nn.Module):
         num_blocks = self.network_depth // self.skip_connection_frequency
         remainder = self.network_depth % self.skip_connection_frequency
         
-        for _ in range(num_blocks):
-            x = self.residual_block(
-                x, 
-                self.network_width, 
-                self.skip_connection_frequency, 
-                self.normalize, 
-                self.activation, 
-                self.lecun_uniform, 
-                self.bias_init
-            )
+        # for _ in range(num_blocks):
+        #     x = self.residual_block(
+        #         x, 
+        #         self.network_width, 
+        #         self.skip_connection_frequency, 
+        #         self.normalize, 
+        #         self.activation, 
+        #         self.lecun_uniform, 
+        #         self.bias_init
+        #     )
+        identity = x
+        for i in range(self.network_depth):
+            x = nn.Dense(self.network_width, kernel_init=self.lecun_uniform, bias_init=self.bias_init)(x)
+            x = self.normalize(x)
+            if i == self.network_depth - 1:
+                x = x + identity
+            x = self.activation(x)
 
         # Process remainder layers
         for _ in range(remainder):
@@ -631,16 +645,23 @@ class G_encoder(nn.Module):
         num_blocks = self.network_depth // self.skip_connection_frequency
         remainder = self.network_depth % self.skip_connection_frequency
         
-        for _ in range(num_blocks):
-            x = self.residual_block(
-                x, 
-                self.network_width, 
-                self.skip_connection_frequency, 
-                self.normalize, 
-                self.activation, 
-                self.lecun_uniform, 
-                self.bias_init
-            )
+        # for _ in range(num_blocks):
+        #     x = self.residual_block(
+        #         x, 
+        #         self.network_width, 
+        #         self.skip_connection_frequency, 
+        #         self.normalize, 
+        #         self.activation, 
+        #         self.lecun_uniform, 
+        #         self.bias_init
+        #     )
+        identity = x
+        for i in range(self.network_depth):
+            x = nn.Dense(self.network_width, kernel_init=self.lecun_uniform, bias_init=self.bias_init)(x)
+            x = self.normalize(x)
+            if i == self.network_depth - 1:
+                x = x + identity
+            x = self.activation(x)
 
         # Process remainder layers
         for _ in range(remainder):

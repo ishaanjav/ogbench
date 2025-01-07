@@ -23,7 +23,7 @@ wandb online
 # Define variables for the experiment
 ENV_NAME="antmaze-giant-navigate-v0"
 WANDB_PROJECT_NAME="Ant-Maze-Giant-Navigate"
-RUN_GROUP="JAXGCRL"
+RUN_GROUP="JAXGCRL-2"
 WANDB_MODE="offline"
 EVAL_EPISODES=50
 AGENT_PATH="agents/jaxgcrl.py"
