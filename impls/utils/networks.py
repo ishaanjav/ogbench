@@ -264,6 +264,7 @@ class Actor(nn.Module):
         else:
             raise ValueError(f"Invalid resnet type: {self.resnet_type}")
 
+    @nn.compact
     def __call__(self, observations, goals=None, goal_encoded=False, temperature=1.0):
         """Return the action distribution.
         
@@ -509,12 +510,14 @@ class GCDiscreteCritic(GCValue):
 
 
 class SA_encoder(nn.Module):
+    """State-Action encoder with ResNet architecture."""
+    
     norm_type = "layer_norm"
     network_width: int = 1024
     network_depth: int = 4
-    skip_connection_frequency: int = 4  # Default to 4 layers per block
+    skip_connection_frequency: int = 4
     use_relu: int = 0
-    resnet_type: str = "resnet"  # Options: "resnet", "noresnet", "resnetOrig", "identityMapping"
+    resnet_type: str = "resnet"
     latent_dim: int = 64
 
     def setup(self):
@@ -540,15 +543,18 @@ class SA_encoder(nn.Module):
             raise ValueError(f"Invalid resnet type: {self.resnet_type}")
 
     @nn.compact
-    def __call__(self, s: jnp.ndarray, a: jnp.ndarray):
-        x = jnp.concatenate([s, a], axis=-1)
+    def __call__(self, observations: jnp.ndarray, actions: jnp.ndarray) -> jnp.ndarray:
+        # Ensure inputs are arrays and concatenate them
+        observations = jnp.asarray(observations)
+        actions = jnp.asarray(actions)
+        x = jnp.concatenate([observations, actions], axis=-1)
         
         # Initial layer
         x = nn.Dense(self.network_width, kernel_init=self.lecun_uniform, bias_init=self.bias_init)(x)
         x = self.normalize(x)
         x = self.activation(x)
 
-        # Use skip_connection_frequency to determine layers per block
+        # Process blocks
         num_blocks = self.network_depth // self.skip_connection_frequency
         remainder = self.network_depth % self.skip_connection_frequency
         
@@ -562,14 +568,25 @@ class SA_encoder(nn.Module):
                 self.lecun_uniform, 
                 self.bias_init
             )
-        # Remainder layers
-        for i in range(remainder):
-            x = self.layer(x, self.network_width, self.normalize, self.activation, self.lecun_uniform, self.bias_init)
-        #Final layer
+
+        # Process remainder layers
+        for _ in range(remainder):
+            x = self.layer(
+                x, 
+                self.network_width, 
+                self.normalize, 
+                self.activation, 
+                self.lecun_uniform, 
+                self.bias_init
+            )
+
+        # Final projection to latent dimension
         x = nn.Dense(self.latent_dim, kernel_init=self.lecun_uniform, bias_init=self.bias_init)(x)
         return x
-    
+
 class G_encoder(nn.Module):
+    """Goal encoder with ResNet architecture."""
+    
     norm_type: str = "layer_norm"
     network_width: int = 1024
     network_depth: int = 4
@@ -577,6 +594,7 @@ class G_encoder(nn.Module):
     use_relu: int = 0
     resnet_type: str = "resnet"  # Options: "resnet", "noresnet", "resnetOrig", "identityMapping"
     latent_dim: int = 64
+
     def setup(self):
         self.lecun_uniform = variance_scaling(1/3, "fan_in", "uniform")
         self.bias_init = nn.initializers.zeros
@@ -600,15 +618,16 @@ class G_encoder(nn.Module):
             raise ValueError(f"Invalid resnet type: {self.resnet_type}")
 
     @nn.compact
-    def __call__(self, g: jnp.ndarray):
-        x = g
+    def __call__(self, goals: jnp.ndarray) -> jnp.ndarray:
+        # Ensure input is an array
+        x = jnp.asarray(goals)
         
         # Initial layer
         x = nn.Dense(self.network_width, kernel_init=self.lecun_uniform, bias_init=self.bias_init)(x)
         x = self.normalize(x)
         x = self.activation(x)
 
-        # Use skip_connection_frequency to determine layers per block
+        # Process blocks
         num_blocks = self.network_depth // self.skip_connection_frequency
         remainder = self.network_depth % self.skip_connection_frequency
         
@@ -622,10 +641,19 @@ class G_encoder(nn.Module):
                 self.lecun_uniform, 
                 self.bias_init
             )
-        # Remainder layers
-        for i in range(remainder):
-            x = self.layer(x, self.network_width, self.normalize, self.activation, self.lecun_uniform, self.bias_init)
-        #Final layer
+
+        # Process remainder layers
+        for _ in range(remainder):
+            x = self.layer(
+                x, 
+                self.network_width, 
+                self.normalize, 
+                self.activation, 
+                self.lecun_uniform, 
+                self.bias_init
+            )
+
+        # Final projection to latent dimension
         x = nn.Dense(self.latent_dim, kernel_init=self.lecun_uniform, bias_init=self.bias_init)(x)
         return x
 
@@ -645,16 +673,16 @@ class JaxGCRLValue(nn.Module):
         latent_dim: Dimension of the latent space for both encoders.
     """
 
-    hidden_dims: Sequence[int]  # Kept for backward compatibility
     ensemble: bool = True
     value_exp: bool = False
     # Network parameters for encoders
     network_width: int = 1024
     network_depth: int = 4
     skip_connection_frequency: int = 4
-    use_relu: int = 0
+    use_relu: bool = False
     resnet_type: str = "resnet"
-    embedding_dim: int = 64  # Single definition of latent_dim
+    embedding_dim: int = 64
+    layer_norm: bool = True
 
     def setup(self) -> None:
         encoder_module = lambda: SA_encoder(
@@ -705,11 +733,13 @@ class JaxGCRLValue(nn.Module):
             info: Whether to additionally return the representations phi and psi.
         """
         if actions is None:
-            phi_inputs = observations
-            phi = self.phi(phi_inputs, jnp.zeros_like(phi_inputs))  # Pass dummy action
-        else:
-            phi = self.phi(observations, actions)
-
+            raise ValueError("Actions must be provided to compute phi.")
+        
+        observations = jnp.asarray(observations)
+        goals = jnp.asarray(goals)
+        actions = jnp.asarray(actions)
+        
+        phi = self.phi(observations, actions)
         psi = self.psi(goals)
 
         # Note: Both encoders output 64-dimensional vectors, so we use that as embedding_dim

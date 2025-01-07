@@ -102,8 +102,6 @@ def setup_wandb(
     # print("**gere", init_kwargs, flush=True)
     run = wandb.init(**init_kwargs)
 
-    print("**DONE")
-
     return run
 
 

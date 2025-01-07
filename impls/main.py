@@ -96,6 +96,7 @@ def main(_):
         example_batch['actions'] = np.full_like(example_batch['actions'], env.action_space.n - 1)
 
     agent_class = agents[config['agent_name']]
+    print(f"Agent Class: {agent_class}")
     agent = agent_class.create(
         FLAGS.seed,
         example_batch['observations'],

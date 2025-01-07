@@ -7,7 +7,8 @@ import ml_collections
 import optax
 from utils.encoders import GCEncoder, encoder_modules
 from utils.flax_utils import ModuleDict, TrainState, nonpytree_field
-from utils.networks import GCActor, GCBilinearValue, GCDiscreteActor, GCDiscreteBilinearCritic, JaxGCRLValue
+from utils.networks import GCActor, GCBilinearValue, GCDiscreteActor, GCDiscreteBilinearCritic, JaxGCRLValue, Actor
+import sys  # Add at top with other imports
 
 
 class JAXGCRLAgent(flax.struct.PyTreeNode):
@@ -79,12 +80,17 @@ class JAXGCRLAgent(flax.struct.PyTreeNode):
             def value_transform(x):
                 return x
 
+        print("Actor loss: ", self.config['actor_loss'])
+
         if self.config['actor_loss'] == 'awr':
             # AWR loss.
             v = value_transform(self.network.select('value')(batch['observations'], batch['actor_goals']))
             q1, q2 = value_transform(
                 self.network.select('critic')(batch['observations'], batch['actor_goals'], batch['actions'])
             )
+            # We have 2 copies of each encoder (SA_encoder and G_encoder)
+            # Each pair of encoders (one SA_encoder + one G_encoder) produces one Q-value
+            # We take the minimum of the two Q-values for conservative estimation
             q = jnp.minimum(q1, q2)
             adv = q - v
 
@@ -119,17 +125,24 @@ class JAXGCRLAgent(flax.struct.PyTreeNode):
                 q_actions = jnp.clip(dist.mode(), -1, 1)
             else:
                 q_actions = jnp.clip(dist.sample(seed=rng), -1, 1)
-            q1, q2 = value_transform(
+            
+            q_values = value_transform(
                 self.network.select('critic')(batch['observations'], batch['actor_goals'], q_actions)
             )
-            q = jnp.minimum(q1, q2)
+            
+            # Handle both ensemble and non-ensemble cases
+            if isinstance(q_values, tuple): # ensemble case
+                q1, q2 = q_values
+                q = jnp.minimum(q1, q2)
+            else:
+                # Non-ensemble case: just use the single Q-value
+                q = q_values
 
             # Normalize Q values by the absolute mean to make the loss scale invariant.
             q_loss = -q.mean() / jax.lax.stop_gradient(jnp.abs(q).mean() + 1e-6)
             log_prob = dist.log_prob(batch['actions'])
 
             bc_loss = -(self.config['alpha'] * log_prob).mean()
-
             actor_loss = q_loss + bc_loss
 
             return actor_loss, {
@@ -222,9 +235,15 @@ class JAXGCRLAgent(flax.struct.PyTreeNode):
         else:
             action_dim = ex_actions.shape[-1]
 
+        # Add logging to show which networks are being used
+        print("\n=== Initializing Network Architecture ===")
+        sys.stdout.flush()
+        
         # Define encoders.
         encoders = dict()
         if config['encoder'] is not None:
+            print("Using visual encoders")
+            sys.stdout.flush()
             encoder_module = encoder_modules[config['encoder']]
             encoders['critic_state'] = encoder_module()
             encoders['critic_goal'] = encoder_module()
@@ -235,6 +254,8 @@ class JAXGCRLAgent(flax.struct.PyTreeNode):
 
         # Define value and actor networks.
         if config['discrete']:
+            print("Critic: GCDiscreteBilinearCritic")
+            sys.stdout.flush()
             critic_def = GCDiscreteBilinearCritic(
                 hidden_dims=config['value_hidden_dims'],
                 latent_dim=config['latent_dim'],
@@ -246,45 +267,61 @@ class JAXGCRLAgent(flax.struct.PyTreeNode):
                 action_dim=action_dim,
             )
         else:
+            print("\nInitializing Critic:")
+            print("Type: JaxGCRLValue")
+            print(f"Network Configuration:")
+            print(f"  - Network width: {config['network_width']}")
+            print(f"  - Network depth: {config['network_depth']}")
+            print(f"  - Skip connection frequency: {config['skip_connection_frequency']}")
+            print(f"  - ResNet type: {config.get('resnet_type')}")
+            print(f"  - Embedding dim: {config['embedding_dim']}")
+            sys.stdout.flush()
             critic_def = JaxGCRLValue(
                 network_width=config['network_width'],
                 network_depth=config['network_depth'],
                 skip_connection_frequency=config['skip_connection_frequency'],
                 use_relu=config['use_relu'],
                 resnet_type=config.get('resnet_type'),
-                
                 embedding_dim=config['embedding_dim'],
                 layer_norm=config['layer_norm'],
                 ensemble=False,
                 value_exp=True,
-                state_encoder=encoders.get('value_state'),
-                goal_encoder=encoders.get('value_goal'),
             )
 
         if config['actor_loss'] == 'awr':
-            # AWR requires a separate V network to compute advantages (Q - V).
+            print("Using separate value network for AWR")
+            sys.stdout.flush()
             value_def = JaxGCRLValue(
                 network_width=config['network_width'],
                 network_depth=config['network_depth'],
                 skip_connection_frequency=config['skip_connection_frequency'],
                 use_relu=config['use_relu'],
                 resnet_type=config.get('resnet_type'),
-                
                 embedding_dim=config['embedding_dim'],
                 layer_norm=config['layer_norm'],
-                ensemble=False,
+                ensemble=True,
                 value_exp=True,
-                state_encoder=encoders.get('value_state'),
-                goal_encoder=encoders.get('value_goal'),
             )
 
         if config['discrete']:
+            print("Actor: GCDiscreteActor")
+            sys.stdout.flush()
             actor_def = GCDiscreteActor(
                 hidden_dims=config['actor_hidden_dims'],
                 action_dim=action_dim,
                 gc_encoder=encoders.get('actor'),
             )
         else:
+            print("\nInitializing Actor:")
+            print("Type: Actor (ResNet)")
+            print(f"Network Configuration:")
+            print(f"  - Network width: {config['network_width']}")
+            print(f"  - Network depth: {config['network_depth']}")
+            print(f"  - Skip connection frequency: {config['skip_connection_frequency']}")
+            print(f"  - ResNet type: {config.get('resnet_type')}")
+            print(f"  - State dependent std: {config['state_dependent_std']}")
+            print(f"  - Constant std: {config['const_std']}")
+            sys.stdout.flush()
             actor_def = Actor(
                 action_dim=action_dim,
                 network_width=config['network_width'],
@@ -292,8 +329,12 @@ class JAXGCRLAgent(flax.struct.PyTreeNode):
                 skip_connection_frequency=config['skip_connection_frequency'],
                 use_relu=config['use_relu'],
                 resnet_type=config.get('resnet_type'),
+                state_dependent_std=config['state_dependent_std'],
                 const_std=config['const_std'],
             )
+
+        print("\n====================================")
+        sys.stdout.flush()
 
         network_info = dict(
             critic=(critic_def, (ex_observations, ex_goals, ex_actions)),
@@ -318,7 +359,7 @@ def get_config():
     config = ml_collections.ConfigDict(
         dict(
             # Agent hyperparameters.
-            agent_name='crl',  # Agent name.
+            agent_name='jaxgcrl',  # Agent name.
             lr=3e-4,  # Learning rate.
             batch_size=1024,  # Batch size.
             actor_hidden_dims=(512, 512, 512),  # Actor network hidden dimensions.
