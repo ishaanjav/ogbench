@@ -44,13 +44,14 @@ flags.DEFINE_integer('eval_episodes', 20, 'Number of episodes for each task.')
 flags.DEFINE_float('eval_temperature', 0, 'Actor temperature for evaluation.')
 flags.DEFINE_float('eval_gaussian', None, 'Action Gaussian noise for evaluation.')
 flags.DEFINE_integer('video_episodes', 1, 'Number of video episodes for each task.')
-flags.DEFINE_integer('video_frame_skip', 3, 'Frame skip for videos.')
+flags.DEFINE_integer('video_frame_skip', 4, 'Frame skip for videos.')
 flags.DEFINE_integer('eval_on_cpu', 1, 'Whether to evaluate on CPU.')
 
 config_flags.DEFINE_config_file('agent', 'agents/gciql.py', lock_config=False)
 
 
 jax.config.update('jax_default_matmul_precision', 'highest')
+jax.config.update('jax_platform_name', 'gpu')
 
 def main(_):
     # random seed if -1

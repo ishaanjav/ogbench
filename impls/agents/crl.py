@@ -277,6 +277,7 @@ class CRLAgent(flax.struct.PyTreeNode):
                 value_exp=True,
                 state_encoder=encoders.get('critic_state'),
                 goal_encoder=encoders.get('critic_goal'),
+                use_resnet=config['use_resnet'],
             )
 
         if config['actor_loss'] == 'awr':
@@ -297,6 +298,7 @@ class CRLAgent(flax.struct.PyTreeNode):
                 value_exp=True,
                 state_encoder=encoders.get('value_state'),
                 goal_encoder=encoders.get('value_goal'),
+                use_resnet=config['use_resnet'],
             )
 
         if config['discrete']:
@@ -322,6 +324,7 @@ class CRLAgent(flax.struct.PyTreeNode):
                 state_dependent_std=False,
                 const_std=config['const_std'],
                 gc_encoder=encoders.get('actor'),
+                use_resnet=config['use_resnet'],
             )
 
         print("\n====================================")
@@ -364,6 +367,8 @@ def get_config():
             actor_log_q=True,  # Whether to maximize log Q (True) or Q itself (False) in the actor loss.
             discrete=False,  # Whether the action space is discrete.
             encoder=ml_collections.config_dict.placeholder(str),  # Visual encoder name (None, 'impala_small', etc.).
+
+            use_resnet=False,
 
             # state_dependent_std = True means it will use std_net
             # state_dependent_std = False and const_std = True means NO stochastic actions

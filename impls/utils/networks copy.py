@@ -196,16 +196,16 @@ class RunningMeanStd(flax.struct.PyTreeNode):
 
 lecun_uniform = variance_scaling(1/3, "fan_in", "uniform")
 bias_init = nn.initializers.zeros
-# # original code
-# def residual_block(x, width, normalize, activation, num_layers):
-#     identity = x
-#     # Apply num_layers dense layers
-#     for _ in range(num_layers):
-#         x = nn.Dense(width, kernel_init=lecun_uniform, bias_init=bias_init)(x)
-#         x = normalize(x)
-#         x = activation(x)
-#     x = x + identity  # Skip connection
-#     return x
+# original code
+def residual_block(x, width, normalize, activation, num_layers):
+    identity = x
+    # Apply num_layers dense layers
+    for _ in range(num_layers):
+        x = nn.Dense(width, kernel_init=lecun_uniform, bias_init=bias_init)(x)
+        x = normalize(x)
+        x = activation(x)
+    x = x + identity  # Skip connection
+    return x
 
 # no resnet
 def standard_block(x, width, num_layers, normalize, activation, lecun_uniform, bias_init):
@@ -400,7 +400,6 @@ class GCActor(nn.Module):
         const_std: Whether to use constant standard deviation.
         final_fc_init_scale: Initial scale of the final fully-connected layer.
         gc_encoder: Optional GCEncoder module to encode the inputs.
-        use_resnet: Whether to use ResNet instead of MLP.
     """
 
     hidden_dims: Sequence[int]
@@ -412,15 +411,9 @@ class GCActor(nn.Module):
     const_std: bool = True
     final_fc_init_scale: float = 1e-2
     gc_encoder: nn.Module = None
-    use_resnet: bool = False
 
     def setup(self):
-        # Choose network architecture based on use_resnet flag
-        if self.use_resnet:
-            self.actor_net = ResNet(self.hidden_dims, activate_final=True)
-        else:
-            self.actor_net = MLP(self.hidden_dims, activate_final=True)
-            
+        self.actor_net = MLP(self.hidden_dims, activate_final=True)
         self.mean_net = nn.Dense(self.action_dim, kernel_init=default_init(self.final_fc_init_scale))
         if self.state_dependent_std:
             self.log_std_net = nn.Dense(self.action_dim, kernel_init=default_init(self.final_fc_init_scale))
@@ -850,7 +843,6 @@ class GCBilinearValue(nn.Module):
         value_exp: Whether to exponentiate the value. Useful for contrastive learning.
         state_encoder: Optional state encoder.
         goal_encoder: Optional goal encoder.
-        use_resnet: Whether to use ResNet instead of MLP.
     """
 
     hidden_dims: Sequence[int]
@@ -860,15 +852,11 @@ class GCBilinearValue(nn.Module):
     value_exp: bool = False
     state_encoder: nn.Module = None
     goal_encoder: nn.Module = None
-    use_resnet: bool = False
 
     def setup(self) -> None:
-        # Choose base network architecture
-        base_module = ResNet if self.use_resnet else MLP
-        mlp_module = base_module
-        
+        mlp_module = MLP
         if self.ensemble:
-            mlp_module = ensemblize(base_module, 2)
+            mlp_module = ensemblize(mlp_module, 2)
 
         self.phi = mlp_module((*self.hidden_dims, self.latent_dim), activate_final=False, layer_norm=self.layer_norm)
         self.psi = mlp_module((*self.hidden_dims, self.latent_dim), activate_final=False, layer_norm=self.layer_norm)
