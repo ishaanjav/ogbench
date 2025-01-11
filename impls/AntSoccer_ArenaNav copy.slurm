@@ -1,12 +1,12 @@
 #!/bin/bash
-#SBATCH --job-name=AS_C4
+#SBATCH --job-name=AS_C8
 #SBATCH --nodes=5                # node count
 #SBATCH --ntasks=1
 #SBATCH --gres=gpu:1
 #SBATCH --constraint=a100
 #SBATCH --mem-per-cpu=16G   # memory per cpu-core
 #SBATCH --cpus-per-task=4        # cpu-cores per task (>1 if multi-threaded tasks)
-#SBATCH --time=23:59:59
+#SBATCH --time=15:59:59
 #SBATCH --mail-type=begin        # send email when job begins
 #SBATCH --mail-type=end          # send email when job ends
 #SBATCH --mail-user=ij9461@princeton.edu
@@ -23,12 +23,12 @@ wandb online
 # Define variables for the experiment
 ENV_NAME="antsoccer-arena-navigate-v0"
 WANDB_PROJECT_NAME="Ant-Soccer-Arena-Navigate"
-RUN_GROUP="RESNET"
+RUN_GROUP="RESNET-4"
 WANDB_MODE="offline"
 EVAL_EPISODES=50
 AGENT_PATH="agents/crl.py"
 
-NUM_HIDDEN_LAYERS=4  # Add this line
+NUM_HIDDEN_LAYERS=8  # Add this line
 
 AGENT_ALPHA=0.3
 AGENT_DISCOUNT=0.99

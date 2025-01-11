@@ -9,6 +9,8 @@ from utils.encoders import GCEncoder, encoder_modules
 from utils.flax_utils import ModuleDict, TrainState, nonpytree_field
 from utils.networks import GCActor, GCBilinearValue, GCDiscreteActor, GCDiscreteBilinearCritic
 import sys
+import flax.linen as nn
+from flax.linen.initializers import variance_scaling
 
 class CRLAgent(flax.struct.PyTreeNode):
     """Contrastive RL (CRL) agent.
@@ -222,11 +224,28 @@ class CRLAgent(flax.struct.PyTreeNode):
         else:
             action_dim = ex_actions.shape[-1]
 
-        # Populate hidden dims based on num_hidden_layers
+        # Populate hidden dims based on respective num_hidden_layers
         if config['actor_hidden_dims'] is None:
-            config['actor_hidden_dims'] = tuple([512] * config['num_hidden_layers'])
+            config['actor_hidden_dims'] = tuple([512] * config['actor_num_hidden_layers'])
         if config['value_hidden_dims'] is None:
             config['value_hidden_dims'] = tuple([512] * config['num_hidden_layers'])
+
+        # Set up initialization and activation functions based on config
+        if config['activation_fn'] == 'gelu':
+            activation_fn = nn.gelu
+        elif config['activation_fn'] == 'swish':
+            activation_fn = nn.swish
+        else:
+            raise ValueError(f"Invalid activation function: {config['activation_fn']}")
+
+        if config['kernel_init'] == 'lecun_uniform':
+            kernel_init = variance_scaling(1/3, "fan_in", "uniform")
+            bias_init = nn.initializers.zeros
+        elif config['kernel_init'] == 'default':
+            kernel_init = default_init()
+            bias_init = None  # Use default
+        else:
+            raise ValueError(f"Invalid kernel initializer: {config['kernel_init']}")
 
         # Add logging to show which networks are being used
         print("\n=== Initializing Network Architecture ===")
@@ -266,6 +285,9 @@ class CRLAgent(flax.struct.PyTreeNode):
             print(f"  - Hidden dims: {config['value_hidden_dims']}")
             print(f"  - Latent dim: {config['latent_dim']}")
             print(f"  - Layer norm: {config['layer_norm']}")
+            print(f"  - Skip connection frequency: {config['skip_connection_frequency']}")
+            print(f"  - Activation: {config['activation_fn'].upper()}")
+            print(f"  - Kernel init: {config['kernel_init']}")
             print(f"  - Ensemble: True")
             print(f"  - Value exp: True")
             sys.stdout.flush()
@@ -278,6 +300,10 @@ class CRLAgent(flax.struct.PyTreeNode):
                 state_encoder=encoders.get('critic_state'),
                 goal_encoder=encoders.get('critic_goal'),
                 use_resnet=config['use_resnet'],
+                skip_connection_frequency=config['skip_connection_frequency'],
+                activation_fn=activation_fn,
+                kernel_init=kernel_init,
+                bias_init=bias_init,
             )
 
         if config['actor_loss'] == 'awr':
@@ -315,6 +341,9 @@ class CRLAgent(flax.struct.PyTreeNode):
             print(f"Network Configuration:")
             print(f"  - Hidden dims: {config['actor_hidden_dims']}")
             print(f"  - Action dim: {action_dim}")
+            print(f"  - Skip connection frequency: {config['actor_skip_connection_frequency']}")
+            print(f"  - Activation: {config['activation_fn'].upper()}")
+            print(f"  - Kernel init: {config['kernel_init']}")
             print(f"  - State dependent std: {config['state_dependent_std']}")
             print(f"  - Constant std: {config['const_std']}")
             sys.stdout.flush()
@@ -325,6 +354,10 @@ class CRLAgent(flax.struct.PyTreeNode):
                 const_std=config['const_std'],
                 gc_encoder=encoders.get('actor'),
                 use_resnet=config['use_resnet'],
+                skip_connection_frequency=config['actor_skip_connection_frequency'],
+                activation_fn=activation_fn,
+                kernel_init=kernel_init,
+                bias_init=bias_init,
             )
 
         print("\n====================================")
@@ -356,9 +389,17 @@ def get_config():
             agent_name='crl',  # Agent name.
             lr=3e-4,  # Learning rate.
             batch_size=1024,  # Batch size.
-            num_hidden_layers=3,  # Add default value
-            actor_hidden_dims=None,  # Will be populated based on num_hidden_layers
+            
+            num_hidden_layers=3,  # For value/critic networks
+            actor_num_hidden_layers=4,  # Specifically for actor network
+            skip_connection_frequency=4,  # For value/critic networks
+            actor_skip_connection_frequency=4,  # Specifically for actor network
+            activation_fn='gelu',  # Options: 'gelu', 'swish'
+            kernel_init='default',  # Options: 'default', 'lecun_uniform'
+
+            actor_hidden_dims=None,  # Will be populated based on actor_num_hidden_layers
             value_hidden_dims=None,  # Will be populated based on num_hidden_layers
+
             latent_dim=512,  # Latent dimension for phi and psi.
             layer_norm=True,  # Whether to use layer normalization.
             discount=0.99,  # Discount factor.
@@ -392,3 +433,7 @@ def get_config():
         )
     )
     return config
+
+def default_init(scale=1.0):
+    """Default kernel initializer."""
+    return nn.initializers.variance_scaling(scale, 'fan_avg', 'uniform')

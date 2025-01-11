@@ -41,30 +41,49 @@ class MLP(nn.Module):
         activate_final: Whether to apply activation to the final layer.
         kernel_init: Kernel initializer.
         layer_norm: Whether to apply layer normalization.
+        activation_fn: Activation function to use.
+        bias_init: Bias initializer to use.
     """
 
     hidden_dims: Sequence[int]
-    activations: Any = nn.gelu
     activate_final: bool = False
-    kernel_init: Any = default_init()
     layer_norm: bool = False
+    activation_fn: Any = nn.gelu
+    kernel_init: Any = default_init()
+    bias_init: Any = None
 
     @nn.compact
     def __call__(self, x):
         for i, size in enumerate(self.hidden_dims):
-            x = nn.Dense(size, kernel_init=self.kernel_init)(x)
+            x = nn.Dense(
+                size, 
+                kernel_init=self.kernel_init,
+                bias_init=self.bias_init,
+            )(x)
             if i + 1 < len(self.hidden_dims) or self.activate_final:
-                x = self.activations(x)
+                x = self.activation_fn(x)
                 if self.layer_norm:
                     x = nn.LayerNorm()(x)
         return x
 
 
 # based off the original paper
-def residual_block(x, width, num_layers, layer_norm, normalize, activation, kernel_init):
+def residual_block(x, width, num_layers, layer_norm, normalize, activation, kernel_init, bias_init):
+    """Process a residual block.
+    
+    Args:
+        x: Input tensor.
+        width: Width of the network layers.
+        num_layers: Number of layers in this block.
+        layer_norm: Whether to use layer normalization.
+        normalize: Normalization function.
+        activation: Activation function.
+        kernel_init: Kernel initializer.
+        bias_init: Bias initializer.
+    """
     identity = x
     for i in range(num_layers):
-        x = nn.Dense(width, kernel_init=kernel_init)(x)
+        x = nn.Dense(width, kernel_init=kernel_init, bias_init=bias_init)(x)
         if layer_norm:
             x = normalize(x)
         if i == num_layers - 1:
@@ -72,45 +91,83 @@ def residual_block(x, width, num_layers, layer_norm, normalize, activation, kern
         x = activation(x)
     return x
 
-class ResNet(nn.Module):
-    """Multi-layer perceptron with residual connections.
+def residual_block_with_norm(x, width, num_layers, activation, kernel_init, bias_init):
+    """Process a residual block with layer normalization."""
+    identity = x
+    for i in range(num_layers):
+        x = nn.Dense(width, kernel_init=kernel_init, bias_init=bias_init)(x)
+        if i == num_layers - 1:
+            x = x + identity
+        x = activation(x)
+        x = nn.LayerNorm()(x)
+    return x
 
-    Attributes:
-        hidden_dims: Hidden layer dimensions.
-        activations: Activation function.
-        activate_final: Whether to apply activation to the final layer.
-        kernel_init: Kernel initializer.
-        layer_norm: Whether to apply layer normalization.
-        skip_connection_frequency: Number of layers between skip connections.
-    """
+def residual_block_no_norm(x, width, num_layers, activation, kernel_init, bias_init):
+    """Process a residual block without layer normalization."""
+    identity = x
+    for i in range(num_layers):
+        x = nn.Dense(width, kernel_init=kernel_init, bias_init=bias_init)(x)
+        if i == num_layers - 1:
+            x = x + identity
+        x = activation(x)
+    return x
+
+def sequential_no_norm(x, width, num_layers, activation, kernel_init, bias_init):
+    for i in range(num_layers):
+        x = nn.Dense(width, kernel_init=kernel_init, bias_init=bias_init)(x)
+        x = activation(x)
+    return x
+
+def sequential_with_norm(x, width, num_layers, activation, kernel_init, bias_init):
+    for i in range(num_layers):
+        x = nn.Dense(width, kernel_init=kernel_init, bias_init=bias_init)(x)
+        x = activation(x)
+        x = nn.LayerNorm()(x)
+    return x
+
+class ResNet(nn.Module):
+    """Multi-layer perceptron with residual connections."""
 
     hidden_dims: Sequence[int]
-    activations: Any = nn.gelu
     activate_final: bool = False
-    kernel_init: Any = default_init()
     layer_norm: bool = False
-    skip_connection_frequency: int = 2
+    skip_connection_frequency: int = 4
+    activation_fn: Any = nn.gelu
+    kernel_init: Any = default_init()
+    bias_init: Any = None
+
+    def setup(self):
+        self.residual_block = residual_block_with_norm if self.layer_norm else residual_block_no_norm
+        self.sequential = sequential_with_norm if self.layer_norm else sequential_no_norm
 
     @nn.compact
     def __call__(self, x):
-        # inital layer
-        x = nn.Dense(self.hidden_dims[0], kernel_init=self.kernel_init)(x)
-        x = self.activations(x)
-        x = nn.LayerNorm()(x)
+        # Initial layer
+        x = nn.Dense(
+            self.hidden_dims[0], 
+            kernel_init=self.kernel_init,
+            bias_init=self.bias_init,
+        )(x)
+        x = self.activation_fn(x)
+        if self.layer_norm:
+            x = nn.LayerNorm()(x)
 
-        identity = x
-        num_blocks = (len(self.hidden_dims) - 1) // self.skip_connection_frequency
-        remainder = (len(self.hidden_dims) - 1) % self.skip_connection_frequency
+        num_blocks = (len(self.hidden_dims) ) // self.skip_connection_frequency
+        remainder = (len(self.hidden_dims)) % self.skip_connection_frequency
         
+        # Process blocks
         for _ in range(num_blocks):
-            x = residual_block(x, self.hidden_dims[0], self.skip_connection_frequency, self.layer_norm, nn.LayerNorm(), self.activations, self.kernel_init)
-        
-        for i in range(remainder):
-            x = nn.Dense(self.hidden_dims[0], kernel_init=self.kernel_init)(x)
-            if i + 1 < remainder or self.activate_final:
-                if self.layer_norm:
-                    x = nn.LayerNorm()(x)
-                x = self.activations(x)
+            x = self.residual_block(
+                x=x,
+                width=self.hidden_dims[0],
+                num_layers=self.skip_connection_frequency,
+                activation=self.activation_fn,
+                kernel_init=self.kernel_init,
+                bias_init=self.bias_init
+            )
+
+        # Process remainder layers
+        x = self.sequential(x, self.hidden_dims[0], remainder, self.activation_fn, self.kernel_init, self.bias_init)
 
         return x
 
@@ -393,14 +450,18 @@ class GCActor(nn.Module):
     Attributes:
         hidden_dims: Hidden layer dimensions.
         action_dim: Action dimension.
-        log_std_min: Minimum value of log standard deviation.
-        log_std_max: Maximum value of log standard deviation.
+        log_std_min: Minimum log standard deviation.
+        log_std_max: Maximum log standard deviation.
         tanh_squash: Whether to squash the action with tanh.
         state_dependent_std: Whether to use state-dependent standard deviation.
         const_std: Whether to use constant standard deviation.
         final_fc_init_scale: Initial scale of the final fully-connected layer.
         gc_encoder: Optional GCEncoder module to encode the inputs.
         use_resnet: Whether to use ResNet instead of MLP.
+        skip_connection_frequency: Number of layers per residual block.
+        activation_fn: Activation function to use.
+        kernel_init: Kernel initializer to use.
+        bias_init: Bias initializer to use.
     """
 
     hidden_dims: Sequence[int]
@@ -413,17 +474,43 @@ class GCActor(nn.Module):
     final_fc_init_scale: float = 1e-2
     gc_encoder: nn.Module = None
     use_resnet: bool = False
+    skip_connection_frequency: int = 4
+    activation_fn: Any = nn.gelu
+    kernel_init: Any = default_init()
+    bias_init: Any = None
 
     def setup(self):
         # Choose network architecture based on use_resnet flag
         if self.use_resnet:
-            self.actor_net = ResNet(self.hidden_dims, activate_final=True)
+            self.actor_net = ResNet(
+                self.hidden_dims, 
+                activate_final=True,
+                skip_connection_frequency=self.skip_connection_frequency,
+                activation_fn=self.activation_fn,
+                kernel_init=self.kernel_init,
+                bias_init=self.bias_init,
+                layer_norm=False,
+            )
         else:
-            self.actor_net = MLP(self.hidden_dims, activate_final=True)
+            self.actor_net = MLP(
+                self.hidden_dims, 
+                activate_final=True,
+                activation_fn=self.activation_fn,
+                kernel_init=self.kernel_init,
+                bias_init=self.bias_init,
+            )
             
-        self.mean_net = nn.Dense(self.action_dim, kernel_init=default_init(self.final_fc_init_scale))
+        self.mean_net = nn.Dense(
+            self.action_dim, 
+            kernel_init=default_init(self.final_fc_init_scale),
+            bias_init=self.bias_init,
+        )
         if self.state_dependent_std:
-            self.log_std_net = nn.Dense(self.action_dim, kernel_init=default_init(self.final_fc_init_scale))
+            self.log_std_net = nn.Dense(
+                self.action_dim, 
+                kernel_init=default_init(self.final_fc_init_scale),
+                bias_init=self.bias_init,
+            )
         else:
             if not self.const_std:
                 self.log_stds = self.param('log_stds', nn.initializers.zeros, (self.action_dim,))
@@ -851,16 +938,24 @@ class GCBilinearValue(nn.Module):
         state_encoder: Optional state encoder.
         goal_encoder: Optional goal encoder.
         use_resnet: Whether to use ResNet instead of MLP.
+        skip_connection_frequency: Number of layers per residual block.
+        activation_fn: Activation function to use.
+        kernel_init: Kernel initializer to use.
+        bias_init: Bias initializer to use.
     """
 
     hidden_dims: Sequence[int]
-    latent_dim: int
+    latent_dim: int = 64
     layer_norm: bool = True
     ensemble: bool = True
     value_exp: bool = False
     state_encoder: nn.Module = None
     goal_encoder: nn.Module = None
     use_resnet: bool = False
+    skip_connection_frequency: int = 4
+    activation_fn: Any = nn.gelu
+    kernel_init: Any = default_init()
+    bias_init: Any = None
 
     def setup(self) -> None:
         # Choose base network architecture
@@ -870,9 +965,26 @@ class GCBilinearValue(nn.Module):
         if self.ensemble:
             mlp_module = ensemblize(base_module, 2)
 
-        self.phi = mlp_module((*self.hidden_dims, self.latent_dim), activate_final=False, layer_norm=self.layer_norm)
-        self.psi = mlp_module((*self.hidden_dims, self.latent_dim), activate_final=False, layer_norm=self.layer_norm)
+        self.phi = mlp_module(
+            (*self.hidden_dims, self.latent_dim), 
+            activate_final=False, 
+            layer_norm=self.layer_norm,
+            skip_connection_frequency=self.skip_connection_frequency,
+            activation_fn=self.activation_fn,
+            kernel_init=self.kernel_init,
+            bias_init=self.bias_init,
+        )
+        self.psi = mlp_module(
+            (*self.hidden_dims, self.latent_dim), 
+            activate_final=False, 
+            layer_norm=self.layer_norm,
+            skip_connection_frequency=self.skip_connection_frequency,
+            activation_fn=self.activation_fn,
+            kernel_init=self.kernel_init,
+            bias_init=self.bias_init,
+        )
 
+    @nn.compact
     def __call__(self, observations, goals, actions=None, info=False):
         """Return the value/critic function.
 
@@ -896,7 +1008,18 @@ class GCBilinearValue(nn.Module):
 
         # 3. Process through the state-action and goal encoding networks
         phi = self.phi(phi_inputs)
+        phi = nn.Dense(
+            self.latent_dim, 
+            kernel_init=self.kernel_init,
+            bias_init=self.bias_init,
+        )(phi)
+
         psi = self.psi(goals)
+        psi = nn.Dense(
+            self.latent_dim, 
+            kernel_init=self.kernel_init,
+            bias_init=self.bias_init,
+        )(psi)
 
         # 4. Compute the value function
         v = (phi * psi / jnp.sqrt(self.latent_dim)).sum(axis=-1)
