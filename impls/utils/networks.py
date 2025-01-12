@@ -942,6 +942,7 @@ class GCBilinearValue(nn.Module):
         activation_fn: Activation function to use.
         kernel_init: Kernel initializer to use.
         bias_init: Bias initializer to use.
+        cold_initialization: Whether to use cold initialization.
     """
 
     hidden_dims: Sequence[int]
@@ -956,6 +957,7 @@ class GCBilinearValue(nn.Module):
     activation_fn: Any = nn.gelu
     kernel_init: Any = default_init()
     bias_init: Any = None
+    cold_initialization: bool = False
 
     def setup(self) -> None:
         # Choose base network architecture
@@ -984,6 +986,25 @@ class GCBilinearValue(nn.Module):
             bias_init=self.bias_init,
         )
 
+        # Define final layer initializations based on cold_initialization
+        if self.cold_initialization:
+            final_kernel_init = nn.initializers.uniform(scale=1e-12)
+            final_bias_init = nn.initializers.zeros
+        else:
+            final_kernel_init = self.kernel_init
+            final_bias_init = self.bias_init
+
+        self.phi_final = nn.Dense(
+            self.latent_dim,
+            kernel_init=final_kernel_init,
+            bias_init=final_bias_init,
+        )
+        self.psi_final = nn.Dense(
+            self.latent_dim,
+            kernel_init=final_kernel_init,
+            bias_init=final_bias_init,
+        )
+
     @nn.compact
     def __call__(self, observations, goals, actions=None, info=False):
         """Return the value/critic function.
@@ -1008,18 +1029,10 @@ class GCBilinearValue(nn.Module):
 
         # 3. Process through the state-action and goal encoding networks
         phi = self.phi(phi_inputs)
-        phi = nn.Dense(
-            self.latent_dim, 
-            kernel_init=self.kernel_init,
-            bias_init=self.bias_init,
-        )(phi)
+        phi = self.phi_final(phi)
 
         psi = self.psi(goals)
-        psi = nn.Dense(
-            self.latent_dim, 
-            kernel_init=self.kernel_init,
-            bias_init=self.bias_init,
-        )(psi)
+        psi = self.psi_final(psi)
 
         # 4. Compute the value function
         v = (phi * psi / jnp.sqrt(self.latent_dim)).sum(axis=-1)

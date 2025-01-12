@@ -1,12 +1,12 @@
 #!/bin/bash
-#SBATCH --job-name=AM_GN16
+#SBATCH --job-name=AM_4
 #SBATCH --nodes=5                # node count
 #SBATCH --ntasks=1
 #SBATCH --gres=gpu:1
 #SBATCH --constraint=a100
 #SBATCH --mem-per-cpu=16G   # memory per cpu-core
 #SBATCH --cpus-per-task=4        # cpu-cores per task (>1 if multi-threaded tasks)
-#SBATCH --time=35:59:59
+#SBATCH --time=15:59:59
 #SBATCH --mail-type=begin        # send email when job begins
 #SBATCH --mail-type=end          # send email when job ends
 #SBATCH --mail-user=ij9461@princeton.edu
@@ -28,8 +28,8 @@ WANDB_MODE="offline"
 EVAL_EPISODES=50
 AGENT_PATH="agents/crl.py"
 
-NUM_HIDDEN_LAYERS=16
-ACTOR_NUM_HIDDEN_LAYERS=16
+NUM_HIDDEN_LAYERS=4
+ACTOR_NUM_HIDDEN_LAYERS=4
 
 SKIP_CONNECTION_FREQUENCY=4
 ACTOR_SKIP_CONNECTION_FREQUENCY=4

@@ -243,7 +243,7 @@ class CRLAgent(flax.struct.PyTreeNode):
             bias_init = nn.initializers.zeros
         elif config['kernel_init'] == 'default':
             kernel_init = default_init()
-            bias_init = None  # Use default
+            bias_init = nn.initializers.zeros
         else:
             raise ValueError(f"Invalid kernel initializer: {config['kernel_init']}")
 
@@ -304,6 +304,7 @@ class CRLAgent(flax.struct.PyTreeNode):
                 activation_fn=activation_fn,
                 kernel_init=kernel_init,
                 bias_init=bias_init,
+                cold_initialization=config['cold_initialization'],
             )
 
         if config['actor_loss'] == 'awr':
@@ -399,6 +400,8 @@ def get_config():
 
             actor_hidden_dims=None,  # Will be populated based on actor_num_hidden_layers
             value_hidden_dims=None,  # Will be populated based on num_hidden_layers
+
+            cold_initialization=False,
 
             latent_dim=512,  # Latent dimension for phi and psi.
             layer_norm=True,  # Whether to use layer normalization.
